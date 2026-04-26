@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
       throw new GameServiceError("Missing game id in the request.", 400);
     }
 
-    return Response.json(getGame(gameId));
+    return Response.json(await getGame(gameId));
   } catch (error) {
     return getErrorResponse(error);
   }
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Player name is required.", 400);
         }
 
-        return Response.json(createGame(body.playerName));
+        return Response.json(await createGame(body.playerName));
 
       case "join":
         if (typeof body.gameId !== "string") {
@@ -85,7 +85,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Player name is required.", 400);
         }
 
-        return Response.json(joinGame(body.gameId, body.playerName));
+        return Response.json(await joinGame(body.gameId, body.playerName));
 
       case "move":
         if (typeof body.gameId !== "string") {
@@ -106,7 +106,7 @@ export async function POST(request: Request) {
         }
 
         return Response.json(
-          submitMove(body.gameId, {
+          await submitMove(body.gameId, {
             fromX: body.fromX,
             fromY: body.fromY,
             playerColor: body.playerColor,

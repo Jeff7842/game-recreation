@@ -1,11 +1,16 @@
 import {
   applyMove,
   createInitialBoard,
-  generateGameId,
   getPieceColor,
   type GameSession,
   type PlayerColor,
 } from "@/lib/checkers";
+
+import {
+  findStoredSessionById,
+  hasStoredSessionId,
+  persistStoredSession,
+} from "@/apis/json-session-store";
 
 export class GameServiceError extends Error {
   status: number;
@@ -25,18 +30,6 @@ type MoveInput = {
   toY: number;
 };
 
-type GameStore = Map<string, GameSession>;
-
-declare global {
-  var __checkersGameStore: GameStore | undefined;
-}
-
-const gameStore: GameStore = globalThis.__checkersGameStore ?? new Map();
-
-if (!globalThis.__checkersGameStore) {
-  globalThis.__checkersGameStore = gameStore;
-}
-
 function cloneGame(game: GameSession): GameSession {
   return {
     ...game,
@@ -44,6 +37,35 @@ function cloneGame(game: GameSession): GameSession {
     players: { ...game.players },
     score: { ...game.score },
   };
+}
+
+const GAME_ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const GAME_ID_LENGTH = 8;
+const MAX_GAME_ID_ATTEMPTS = 20;
+
+function createRandomGameId(): string {
+  let id = "CHK-";
+
+  for (let index = 0; index < GAME_ID_LENGTH; index += 1) {
+    id += GAME_ID_CHARS[Math.floor(Math.random() * GAME_ID_CHARS.length)];
+  }
+
+  return id;
+}
+
+async function generateUniqueGameId(): Promise<string> {
+  for (let attempt = 0; attempt < MAX_GAME_ID_ATTEMPTS; attempt += 1) {
+    const gameId = createRandomGameId();
+
+    if (!(await hasStoredSessionId(gameId))) {
+      return gameId;
+    }
+  }
+
+  throw new GameServiceError(
+    "Could not create a unique game id right now. Please try again.",
+    503,
+  );
 }
 
 function normalizePlayerName(playerName: string): string {
@@ -66,25 +88,24 @@ function normalizeGameId(gameId: string): string {
   return normalized;
 }
 
-function getStoredGame(gameId: string): GameSession {
-  const game = gameStore.get(normalizeGameId(gameId));
+async function getStoredGame(gameId: string): Promise<GameSession> {
+  const storedSession = await findStoredSessionById(normalizeGameId(gameId));
 
-  if (!game) {
+  if (!storedSession) {
     throw new GameServiceError("Game not found.", 404);
   }
 
-  return game;
+  return cloneGame(storedSession.game);
 }
 
-function saveGame(game: GameSession): GameSession {
-  const snapshot = cloneGame(game);
-  gameStore.set(snapshot.id, snapshot);
-  return cloneGame(snapshot);
+async function saveGame(game: GameSession): Promise<GameSession> {
+  const storedSession = await persistStoredSession(game);
+  return cloneGame(storedSession.game);
 }
 
-export function createGame(playerName: string): GameSession {
+export async function createGame(playerName: string): Promise<GameSession> {
   const redPlayer = normalizePlayerName(playerName);
-  const id = generateGameId(gameStore);
+  const id = await generateUniqueGameId();
 
   return saveGame({
     id,
@@ -102,12 +123,15 @@ export function createGame(playerName: string): GameSession {
   });
 }
 
-export function getGame(gameId: string): GameSession {
-  return cloneGame(getStoredGame(gameId));
+export function getGame(gameId: string): Promise<GameSession> {
+  return getStoredGame(gameId);
 }
 
-export function joinGame(gameId: string, playerName: string): GameSession {
-  const game = getStoredGame(gameId);
+export async function joinGame(
+  gameId: string,
+  playerName: string,
+): Promise<GameSession> {
+  const game = await getStoredGame(gameId);
   const blackPlayer = normalizePlayerName(playerName);
 
   if (game.players.b && game.players.b !== blackPlayer) {
@@ -118,8 +142,11 @@ export function joinGame(gameId: string, playerName: string): GameSession {
   return saveGame(game);
 }
 
-export function submitMove(gameId: string, move: MoveInput): GameSession {
-  const game = getStoredGame(gameId);
+export async function submitMove(
+  gameId: string,
+  move: MoveInput,
+): Promise<GameSession> {
+  const game = await getStoredGame(gameId);
 
   if (!game.players.b) {
     throw new GameServiceError("Wait for the second player to join first.", 409);

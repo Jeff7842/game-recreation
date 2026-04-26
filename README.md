@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Network Checkers
 
-## Getting Started
+Multiplayer checkers built with Next.js App Router.
 
-First, run the development server:
+## Local Setup
+
+1. Install dependencies:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+1. Start the development server:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+pnpm dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Open [http://localhost:3000](http://localhost:3000).
 
-## Learn More
+## Game API
 
-To learn more about Next.js, take a look at the following resources:
+- `GET /api/game?id=<GAME_ID>`
+  Returns a game session by id.
+- `POST /api/game`
+  Uses one of these actions:
+  - `{ "action": "create", "playerName": "..." }`
+  - `{ "action": "join", "gameId": "CHK-XXXXXXXX", "playerName": "..." }`
+  - `{ "action": "move", "gameId": "CHK-XXXXXXXX", "fromX": 0, "fromY": 0, "toX": 1, "toY": 1, "playerColor": "r" }`
+- `GET /api/sessions`
+  Returns all stored sessions from the JSON datastore.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## JSON Datastore
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The API repository bootstraps from `data/sessions.json` (tracked seed) and writes active runtime state to `data/.sessions.runtime.json`.
 
-## Deploy on Vercel
+Each stored session includes:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- auto-generated game id
+- player names and board state
+- dynamic score updates
+- winner and loser metadata once a match finishes
+- created/updated timestamps and session status (`waiting`, `active`, `finished`)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+No environment variables are required for this datastore mode.
+
+### Concurrency Notes
+
+The repository serializes mutations and uses atomic file replacement to reduce the risk of JSON corruption during rapid updates.
+
+### Deployment Notes
+
+This JSON datastore is best suited for local development and temporary review environments.
+On serverless platforms, file-based persistence can reset across cold starts or redeployments.
+
+## Routing Notes
+
+Gameplay UI is served from `/` only.
+There is no dedicated `/game` page route.

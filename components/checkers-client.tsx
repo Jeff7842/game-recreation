@@ -59,20 +59,52 @@ function Cell({ piece }: { piece: BoardCell }) {
   );
 }
 
+class GameApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "GameApiError";
+    this.status = status;
+  }
+}
+
+function getErrorMessageFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const maybePayload = payload as {
+    error?: unknown;
+  };
+
+  if (typeof maybePayload.error === "string") {
+    return maybePayload.error;
+  }
+
+  if (
+    maybePayload.error &&
+    typeof maybePayload.error === "object" &&
+    "message" in maybePayload.error &&
+    typeof (maybePayload.error as { message?: unknown }).message === "string"
+  ) {
+    return (maybePayload.error as { message: string }).message;
+  }
+
+  return null;
+}
+
 async function readGameResponse(response: Response): Promise<GameSession> {
   const payload = (await response.json().catch(() => null)) as
-    | { error?: string }
+    | { error?: string | { message?: string } }
     | GameSession
     | null;
 
   if (!response.ok) {
-    throw new Error(
-      payload &&
-        typeof payload === "object" &&
-        "error" in payload &&
-        typeof payload.error === "string"
-        ? payload.error
-        : "Something went wrong while talking to the game server.",
+    throw new GameApiError(
+      getErrorMessageFromPayload(payload) ??
+        "Something went wrong while talking to the game server.",
+      response.status,
     );
   }
 
@@ -95,6 +127,7 @@ export default function CheckersClient() {
   const [isBusy, setIsBusy] = useState(false);
   const [isSubmittingMove, setIsSubmittingMove] = useState(false);
   const gameRef = useRef<GameSession | null>(null);
+  const hasHandledTerminalSyncErrorRef = useRef(false);
 
   useEffect(() => {
     gameRef.current = game;
@@ -115,6 +148,16 @@ export default function CheckersClient() {
     setGameId(nextGame.id);
   }
 
+  function resetGameState() {
+    setSelected(null);
+    setGame(null);
+    setGameId("");
+    setPlayerColor(null);
+    setJoinGameId("");
+    setCopied(false);
+    setView("create");
+  }
+
   const syncGame = useEffectEvent(async (silent = true) => {
     if (!gameId) {
       return;
@@ -127,6 +170,24 @@ export default function CheckersClient() {
       const nextGame = await readGameResponse(response);
       applyGameState(nextGame);
     } catch (error) {
+      if (
+        error instanceof GameApiError &&
+        (error.status === 404 || error.status === 403)
+      ) {
+        resetGameState();
+
+        if (!hasHandledTerminalSyncErrorRef.current) {
+          hasHandledTerminalSyncErrorRef.current = true;
+          alert(
+            error.status === 404
+              ? "This game is no longer available. Create or join a new game."
+              : getErrorMessage(error),
+          );
+        }
+
+        return;
+      }
+
       if (!silent) {
         alert(getErrorMessage(error));
       }
@@ -160,6 +221,8 @@ export default function CheckersClient() {
   const blackPlayerName = game?.players.b ?? "Waiting...";
   const currentTurnLabel = game?.winner
     ? `${game.winner === "r" ? "RED" : "BLACK"} WINS`
+    : !game?.players.b
+    ? "Waiting for opponent to join..."
     : isPlayerTurn
         ? "YOUR TURN"
         : "OPPONENT'S TURN";
@@ -191,6 +254,7 @@ export default function CheckersClient() {
         playerName: trimmedName,
       });
 
+      hasHandledTerminalSyncErrorRef.current = false;
       setPlayerName(trimmedName);
       setPlayerColor("r");
       setJoinGameId("");
@@ -220,6 +284,7 @@ export default function CheckersClient() {
         playerName: trimmedName,
       });
 
+      hasHandledTerminalSyncErrorRef.current = false;
       setPlayerName(trimmedName);
       setPlayerColor("b");
       setJoinGameId(normalizedGameId);
@@ -302,13 +367,8 @@ export default function CheckersClient() {
   }
 
   function exitGame() {
-    setSelected(null);
-    setGame(null);
-    setGameId("");
-    setPlayerColor(null);
-    setJoinGameId("");
-    setCopied(false);
-    setView("create");
+    hasHandledTerminalSyncErrorRef.current = false;
+    resetGameState();
   }
 
   return (
