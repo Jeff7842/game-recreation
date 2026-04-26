@@ -2,6 +2,40 @@
 
 Multiplayer checkers built with Next.js App Router.
 
+## Change The API URL
+
+The game reads one setting:
+
+```bash
+GAME_API_URL=/api/game
+```
+
+Keep `/api/game` when the website and API are deployed together.
+Change it to a full URL when the API lives somewhere else:
+
+```bash
+GAME_API_URL=https://your-api-site.com/api/game
+```
+
+That is the only URL the game screen uses for create, join, load, and move.
+
+## Simple File Map
+
+- `app/page.tsx`
+  Opens the game screen and gives it the API URL.
+- `components/checkers-client.tsx`
+  Shows the screens, board, buttons, player names, and game id.
+- `apis/game-api-client.ts`
+  Browser helper. It builds the API URL and sends create, join, load, and move requests.
+- `app/api/game/route.ts`
+  API route. It receives requests and sends them to the game service.
+- `apis/game-service.ts`
+  Game rules helper. It creates games, joins players, and saves moves.
+- `apis/json-session-store.ts`
+  JSON file store. It reads and writes saved games.
+- `lib/checkers.ts`
+  Checkers board rules. It knows which move is allowed.
+
 ## Local Setup
 
 1. Install dependencies:
@@ -22,6 +56,8 @@ pnpm dev
 
 - `GET /api/game?id=<GAME_ID>`
   Returns a game session by id.
+- `GET /api/game?gameId=<GAME_ID>`
+  Also works. This is here so production links can use a clear name.
 - `POST /api/game`
   Uses one of these actions:
   - `{ "action": "create", "playerName": "..." }`

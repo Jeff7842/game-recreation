@@ -12,6 +12,14 @@ import {
   type GameSession,
   type PlayerColor,
 } from "@/lib/checkers";
+import {
+  GameApiError,
+  createGameOnServer,
+  getGameApiErrorMessage,
+  getGameFromServer,
+  joinGameOnServer,
+  movePieceOnServer,
+} from "@/apis/game-api-client";
 
 const defaultScore = { r: 12, b: 12 };
 const pollIntervalMs = 1500;
@@ -23,25 +31,9 @@ type SelectedCell = {
 
 type View = "create" | "join" | "game";
 
-type GameRequestBody =
-  | {
-      action: "create";
-      playerName: string;
-    }
-  | {
-      action: "join";
-      gameId: string;
-      playerName: string;
-    }
-  | {
-      action: "move";
-      gameId: string;
-      fromX: number;
-      fromY: number;
-      playerColor: PlayerColor;
-      toX: number;
-      toY: number;
-    };
+type CheckersClientProps = {
+  gameApiUrl: string;
+};
 
 function Cell({ piece }: { piece: BoardCell }) {
   if (piece === ".") {
@@ -59,63 +51,7 @@ function Cell({ piece }: { piece: BoardCell }) {
   );
 }
 
-class GameApiError extends Error {
-  status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "GameApiError";
-    this.status = status;
-  }
-}
-
-function getErrorMessageFromPayload(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const maybePayload = payload as {
-    error?: unknown;
-  };
-
-  if (typeof maybePayload.error === "string") {
-    return maybePayload.error;
-  }
-
-  if (
-    maybePayload.error &&
-    typeof maybePayload.error === "object" &&
-    "message" in maybePayload.error &&
-    typeof (maybePayload.error as { message?: unknown }).message === "string"
-  ) {
-    return (maybePayload.error as { message: string }).message;
-  }
-
-  return null;
-}
-
-async function readGameResponse(response: Response): Promise<GameSession> {
-  const payload = (await response.json().catch(() => null)) as
-    | { error?: string | { message?: string } }
-    | GameSession
-    | null;
-
-  if (!response.ok) {
-    throw new GameApiError(
-      getErrorMessageFromPayload(payload) ??
-        "Something went wrong while talking to the game server.",
-      response.status,
-    );
-  }
-
-  return payload as GameSession;
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
-}
-
-export default function CheckersClient() {
+export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const [selected, setSelected] = useState<SelectedCell | null>(null);
   const [playerName, setPlayerName] = useState("");
   const [playerColor, setPlayerColor] = useState<PlayerColor | null>(null);
@@ -164,10 +100,7 @@ export default function CheckersClient() {
     }
 
     try {
-      const response = await fetch(`/api/game?id=${encodeURIComponent(gameId)}`, {
-        cache: "no-store",
-      });
-      const nextGame = await readGameResponse(response);
+      const nextGame = await getGameFromServer(gameApiUrl, gameId);
       applyGameState(nextGame);
     } catch (error) {
       if (
@@ -181,7 +114,7 @@ export default function CheckersClient() {
           alert(
             error.status === 404
               ? "This game is no longer available. Create or join a new game."
-              : getErrorMessage(error),
+              : getGameApiErrorMessage(error),
           );
         }
 
@@ -189,7 +122,7 @@ export default function CheckersClient() {
       }
 
       if (!silent) {
-        alert(getErrorMessage(error));
+        alert(getGameApiErrorMessage(error));
       }
     }
   });
@@ -227,18 +160,6 @@ export default function CheckersClient() {
         ? "YOUR TURN"
         : "OPPONENT'S TURN";
 
-  async function postGame(body: GameRequestBody): Promise<GameSession> {
-    const response = await fetch("/api/game", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    return readGameResponse(response);
-  }
-
   async function createGame() {
     const trimmedName = playerName.trim();
 
@@ -249,10 +170,7 @@ export default function CheckersClient() {
     setIsBusy(true);
 
     try {
-      const nextGame = await postGame({
-        action: "create",
-        playerName: trimmedName,
-      });
+      const nextGame = await createGameOnServer(gameApiUrl, trimmedName);
 
       hasHandledTerminalSyncErrorRef.current = false;
       setPlayerName(trimmedName);
@@ -261,7 +179,7 @@ export default function CheckersClient() {
       setView("game");
       applyGameState(nextGame);
     } catch (error) {
-      alert(getErrorMessage(error));
+      alert(getGameApiErrorMessage(error));
     } finally {
       setIsBusy(false);
     }
@@ -278,11 +196,11 @@ export default function CheckersClient() {
     setIsBusy(true);
 
     try {
-      const nextGame = await postGame({
-        action: "join",
-        gameId: normalizedGameId,
-        playerName: trimmedName,
-      });
+      const nextGame = await joinGameOnServer(
+        gameApiUrl,
+        normalizedGameId,
+        trimmedName,
+      );
 
       hasHandledTerminalSyncErrorRef.current = false;
       setPlayerName(trimmedName);
@@ -291,7 +209,7 @@ export default function CheckersClient() {
       setView("game");
       applyGameState(nextGame);
     } catch (error) {
-      alert(getErrorMessage(error));
+      alert(getGameApiErrorMessage(error));
     } finally {
       setIsBusy(false);
     }
@@ -331,8 +249,7 @@ export default function CheckersClient() {
     setIsSubmittingMove(true);
 
     try {
-      const nextGame = await postGame({
-        action: "move",
+      const nextGame = await movePieceOnServer(gameApiUrl, {
         gameId: activeGame.id,
         fromX: selected.x,
         fromY: selected.y,
@@ -344,7 +261,7 @@ export default function CheckersClient() {
       setSelected(null);
       applyGameState(nextGame);
     } catch (error) {
-      alert(getErrorMessage(error));
+      alert(getGameApiErrorMessage(error));
     } finally {
       setIsSubmittingMove(false);
     }

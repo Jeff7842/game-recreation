@@ -31,6 +31,29 @@ type GameRequestBody =
 
 export const dynamic = "force-dynamic";
 
+const corsHeaders = {
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Origin": "*",
+};
+
+function withCors(init: ResponseInit = {}): ResponseInit {
+  const headers = new Headers(init.headers);
+
+  Object.entries(corsHeaders).forEach(([name, value]) => {
+    headers.set(name, value);
+  });
+
+  return {
+    ...init,
+    headers,
+  };
+}
+
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return Response.json(body, withCors(init));
+}
+
 function isPlayerColor(value: unknown): value is PlayerColor {
   return value === "r" || value === "b";
 }
@@ -41,24 +64,40 @@ function isNumber(value: unknown): value is number {
 
 function getErrorResponse(error: unknown): Response {
   if (error instanceof GameServiceError) {
-    return Response.json({ error: error.message }, { status: error.status });
+    return jsonResponse({ error: error.message }, { status: error.status });
   }
 
-  return Response.json(
+  return jsonResponse(
     { error: "Something went wrong while handling the game request." },
     { status: 500 },
   );
 }
 
+function getGameIdFromRequest(request: NextRequest): string | null {
+  const gameId =
+    request.nextUrl.searchParams.get("id") ??
+    request.nextUrl.searchParams.get("gameId") ??
+    request.headers.get("x-game-id");
+
+  return gameId?.trim() ? gameId : null;
+}
+
+export function OPTIONS() {
+  return new Response(null, withCors({ status: 204 }));
+}
+
 export async function GET(request: NextRequest) {
   try {
-    const gameId = request.nextUrl.searchParams.get("id");
+    const gameId = getGameIdFromRequest(request);
 
     if (!gameId) {
-      throw new GameServiceError("Missing game id in the request.", 400);
+      throw new GameServiceError(
+        "Missing game id in the request. Send it like /api/game?id=CHK-XXXXXXXX.",
+        400,
+      );
     }
 
-    return Response.json(await getGame(gameId));
+    return jsonResponse(await getGame(gameId));
   } catch (error) {
     return getErrorResponse(error);
   }
@@ -74,7 +113,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Player name is required.", 400);
         }
 
-        return Response.json(await createGame(body.playerName));
+        return jsonResponse(await createGame(body.playerName));
 
       case "join":
         if (typeof body.gameId !== "string") {
@@ -85,7 +124,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Player name is required.", 400);
         }
 
-        return Response.json(await joinGame(body.gameId, body.playerName));
+        return jsonResponse(await joinGame(body.gameId, body.playerName));
 
       case "move":
         if (typeof body.gameId !== "string") {
@@ -105,7 +144,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Move coordinates are required.", 400);
         }
 
-        return Response.json(
+        return jsonResponse(
           await submitMove(body.gameId, {
             fromX: body.fromX,
             fromY: body.fromY,
