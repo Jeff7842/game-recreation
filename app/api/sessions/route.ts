@@ -1,6 +1,7 @@
 import { listStoredSessions } from "@/apis/json-session-store";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function GET() {
   try {

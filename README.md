@@ -58,6 +58,8 @@ pnpm dev
   Returns a game session by id.
 - `GET /api/game?gameId=<GAME_ID>`
   Also works. This is here so production links can use a clear name.
+- `GET /api/game/stream?id=<GAME_ID>`
+  Opens a Server-Sent Events stream for live game updates. Browsers use this instead of fast polling while a match is open.
 - `POST /api/game`
   Uses one of these actions:
   - `{ "action": "create", "playerName": "..." }`
@@ -83,6 +85,18 @@ No environment variables are required for this datastore mode.
 ### Concurrency Notes
 
 The repository serializes mutations and uses atomic file replacement to reduce the risk of JSON corruption during rapid updates.
+
+## Production Session Store
+
+For production, configure a durable Vercel KV or Upstash Redis REST store:
+
+```bash
+KV_REST_API_URL=https://...
+KV_REST_API_TOKEN=...
+SESSION_STORE_NAMESPACE=game-recreation
+```
+
+When `KV_REST_API_URL` and `KV_REST_API_TOKEN` are present, the app stores live matches in KV instead of the runtime JSON file. This prevents active games from disappearing when a serverless function cold starts, moves to another instance, or loses `/tmp` state.
 
 ### Deployment Notes
 

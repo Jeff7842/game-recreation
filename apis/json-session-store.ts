@@ -16,9 +16,25 @@ function getRuntimeSessionStorePath(): string {
 
 const SESSION_STORE_RUNTIME_PATH = getRuntimeSessionStorePath();
 const SESSION_STORE_DIRECTORY = dirname(SESSION_STORE_RUNTIME_PATH);
+const SESSION_STORE_NAMESPACE =
+  process.env.SESSION_STORE_NAMESPACE?.trim() || "game-recreation";
+const SESSION_STORE_INDEX_KEY = `${SESSION_STORE_NAMESPACE}:sessions:index`;
+const SESSION_STORE_RECORD_PREFIX = `${SESSION_STORE_NAMESPACE}:session:`;
 
 type SessionStoreData = {
   sessions: StoredSessionRecord[];
+};
+
+type KvConfig = {
+  restApiToken: string;
+  restApiUrl: string;
+};
+
+type KvCommandPart = number | string;
+
+type KvCommandResponse<T> = {
+  error?: string;
+  result?: T;
 };
 
 export type SessionStatus = "waiting" | "active" | "finished";
@@ -41,6 +57,24 @@ export type StoredSessionRecord = {
 
 let mutationQueue: Promise<unknown> = Promise.resolve();
 
+function getKvConfig(): KvConfig | null {
+  const restApiUrl =
+    process.env.KV_REST_API_URL?.trim() ||
+    process.env.UPSTASH_REDIS_REST_URL?.trim();
+  const restApiToken =
+    process.env.KV_REST_API_TOKEN?.trim() ||
+    process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+
+  if (!restApiUrl || !restApiToken) {
+    return null;
+  }
+
+  return {
+    restApiToken,
+    restApiUrl: restApiUrl.replace(/\/+$/, ""),
+  };
+}
+
 function isMissingFileError(error: unknown): boolean {
   return (
     !!error &&
@@ -52,6 +86,10 @@ function isMissingFileError(error: unknown): boolean {
 
 function normalizeGameId(gameId: string): string {
   return gameId.trim().toUpperCase();
+}
+
+function getSessionRecordKey(gameId: string): string {
+  return `${SESSION_STORE_RECORD_PREFIX}${normalizeGameId(gameId)}`;
 }
 
 function cloneGame(game: GameSession): GameSession {
@@ -69,6 +107,29 @@ function cloneSessionRecord(record: StoredSessionRecord): StoredSessionRecord {
     game: cloneGame(record.game),
     result: { ...record.result },
   };
+}
+
+function parseStoredSessionRecord(value: unknown): StoredSessionRecord | null {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  try {
+    const parsedValue = JSON.parse(value) as Partial<StoredSessionRecord>;
+
+    if (
+      !parsedValue ||
+      typeof parsedValue !== "object" ||
+      typeof parsedValue.id !== "string" ||
+      !parsedValue.game
+    ) {
+      return null;
+    }
+
+    return parsedValue as StoredSessionRecord;
+  } catch {
+    return null;
+  }
 }
 
 function createEmptySessionStore(): SessionStoreData {
@@ -180,7 +241,115 @@ function deriveSessionResult(game: GameSession): SessionResult {
   };
 }
 
+async function runKvCommand<T>(command: KvCommandPart[]): Promise<T> {
+  const kvConfig = getKvConfig();
+
+  if (!kvConfig) {
+    throw new Error("Session KV storage is not configured.");
+  }
+
+  const response = await fetch(kvConfig.restApiUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${kvConfig.restApiToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+    cache: "no-store",
+  });
+  const payload = (await response.json().catch(() => null)) as
+    | KvCommandResponse<T>
+    | null;
+
+  if (!response.ok || !payload || typeof payload !== "object") {
+    throw new Error("Session KV storage request failed.");
+  }
+
+  if (typeof payload.error === "string") {
+    throw new Error(`Session KV storage failed: ${payload.error}`);
+  }
+
+  return payload.result as T;
+}
+
+async function listKvStoredSessions(): Promise<StoredSessionRecord[]> {
+  const sessionIds = await runKvCommand<string[]>([
+    "ZREVRANGE",
+    SESSION_STORE_INDEX_KEY,
+    0,
+    -1,
+  ]);
+
+  if (!Array.isArray(sessionIds)) {
+    return [];
+  }
+
+  const sessions = await Promise.all(sessionIds.map(findKvStoredSessionById));
+
+  return sessions
+    .filter((session): session is StoredSessionRecord => Boolean(session))
+    .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt))
+    .map(cloneSessionRecord);
+}
+
+async function findKvStoredSessionById(
+  gameId: string,
+): Promise<StoredSessionRecord | null> {
+  const rawSession = await runKvCommand<string | null>([
+    "GET",
+    getSessionRecordKey(gameId),
+  ]);
+  const storedSession = parseStoredSessionRecord(rawSession);
+
+  return storedSession ? cloneSessionRecord(storedSession) : null;
+}
+
+async function hasKvStoredSessionId(gameId: string): Promise<boolean> {
+  const exists = await runKvCommand<number>([
+    "EXISTS",
+    getSessionRecordKey(gameId),
+  ]);
+
+  return Number(exists) > 0;
+}
+
+async function persistKvStoredSession(
+  game: GameSession,
+): Promise<StoredSessionRecord> {
+  const normalizedGame = cloneGame(game);
+  normalizedGame.id = normalizeGameId(normalizedGame.id);
+
+  const existingSession = await findKvStoredSessionById(normalizedGame.id);
+  const now = new Date().toISOString();
+  const storedSession: StoredSessionRecord = {
+    id: normalizedGame.id,
+    game: normalizedGame,
+    status: deriveSessionStatus(normalizedGame),
+    result: deriveSessionResult(normalizedGame),
+    createdAt: existingSession?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  await runKvCommand<string>([
+    "SET",
+    getSessionRecordKey(normalizedGame.id),
+    JSON.stringify(storedSession),
+  ]);
+  await runKvCommand<number>([
+    "ZADD",
+    SESSION_STORE_INDEX_KEY,
+    Date.parse(now),
+    normalizedGame.id,
+  ]);
+
+  return cloneSessionRecord(storedSession);
+}
+
 export async function listStoredSessions(): Promise<StoredSessionRecord[]> {
+  if (getKvConfig()) {
+    return listKvStoredSessions();
+  }
+
   await waitForPendingMutations();
 
   const store = await readSessionStore();
@@ -193,6 +362,10 @@ export async function listStoredSessions(): Promise<StoredSessionRecord[]> {
 export async function findStoredSessionById(
   gameId: string,
 ): Promise<StoredSessionRecord | null> {
+  if (getKvConfig()) {
+    return findKvStoredSessionById(gameId);
+  }
+
   await waitForPendingMutations();
 
   const normalizedGameId = normalizeGameId(gameId);
@@ -203,6 +376,10 @@ export async function findStoredSessionById(
 }
 
 export async function hasStoredSessionId(gameId: string): Promise<boolean> {
+  if (getKvConfig()) {
+    return hasKvStoredSessionId(gameId);
+  }
+
   await waitForPendingMutations();
 
   const normalizedGameId = normalizeGameId(gameId);
@@ -214,6 +391,10 @@ export async function hasStoredSessionId(gameId: string): Promise<boolean> {
 export async function persistStoredSession(
   game: GameSession,
 ): Promise<StoredSessionRecord> {
+  if (getKvConfig()) {
+    return persistKvStoredSession(game);
+  }
+
   return withSessionStoreMutation((store) => {
     const normalizedGame = cloneGame(game);
     normalizedGame.id = normalizeGameId(normalizedGame.id);

@@ -83,7 +83,7 @@ function getErrorMessageFromPayload(payload: unknown): string | null {
   return null;
 }
 
-function hasGameId(payload: unknown): payload is GameSession {
+export function isGameSessionPayload(payload: unknown): payload is GameSession {
   return (
     !!payload &&
     typeof payload === "object" &&
@@ -104,7 +104,7 @@ async function readGameResponse(response: Response): Promise<GameSession> {
     );
   }
 
-  if (!hasGameId(payload)) {
+  if (!isGameSessionPayload(payload)) {
     throw new GameApiError("The game server did not send back a game id.", 502);
   }
 
@@ -133,6 +133,15 @@ export function getGameFromServer(
   return fetch(buildGameApiUrl(gameApiUrl, gameId), {
     cache: "no-store",
   }).then(readGameResponse);
+}
+
+export function getGameStreamUrl(gameApiUrl: string, gameId: string): string {
+  const gameUrl = new URL(buildGameApiUrl(gameApiUrl), getBrowserOrigin());
+
+  gameUrl.pathname = `${gameUrl.pathname.replace(/\/+$/, "")}/stream`;
+  gameUrl.searchParams.set("id", gameId);
+
+  return gameUrl.toString();
 }
 
 export function createGameOnServer(

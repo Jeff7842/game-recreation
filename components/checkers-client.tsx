@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
   getValidMove,
@@ -17,12 +17,22 @@ import {
   createGameOnServer,
   getGameApiErrorMessage,
   getGameFromServer,
+  getGameStreamUrl,
+  isGameSessionPayload,
   joinGameOnServer,
   movePieceOnServer,
 } from "@/apis/game-api-client";
+import {
+  GameResultModal,
+  type GameResultModalState,
+} from "@/components/game-result-modal";
+import {
+  GameToastStack,
+  type GameToastItem,
+} from "@/components/game-toast";
 
 const defaultScore = { r: 12, b: 12 };
-const pollIntervalMs = 1500;
+const fallbackPollIntervalMs = 30000;
 
 type SelectedCell = {
   x: number;
@@ -62,12 +72,58 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const [copied, setCopied] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [isSubmittingMove, setIsSubmittingMove] = useState(false);
+  const [resultModal, setResultModal] = useState<GameResultModalState | null>(
+    null,
+  );
+  const [toasts, setToasts] = useState<GameToastItem[]>([]);
   const gameRef = useRef<GameSession | null>(null);
-  const hasHandledTerminalSyncErrorRef = useRef(false);
+  const handledResultGameIdRef = useRef<string | null>(null);
+  const hasShownLiveSyncFallbackToastRef = useRef(false);
+  const hasShownSyncUnavailableToastRef = useRef(false);
+  const syncMissingCountRef = useRef(0);
+  const toastIdRef = useRef(0);
+  const toastTimeoutsRef = useRef<number[]>([]);
 
   useEffect(() => {
     gameRef.current = game;
   }, [game]);
+
+  const dismissToast = useCallback((toastId: number) => {
+    setToasts((currentToasts) =>
+      currentToasts.filter((toast) => toast.id !== toastId),
+    );
+  }, []);
+
+  const showToast = useCallback(
+    (
+      toast: Omit<GameToastItem, "id">,
+      durationMs = toast.kind === "error" ? 6500 : 4200,
+    ) => {
+      toastIdRef.current += 1;
+      const toastId = toastIdRef.current;
+
+      setToasts((currentToasts) =>
+        [{ ...toast, id: toastId }, ...currentToasts].slice(0, 4),
+      );
+
+      const timeoutId = window.setTimeout(() => {
+        dismissToast(toastId);
+      }, durationMs);
+
+      toastTimeoutsRef.current.push(timeoutId);
+    },
+    [dismissToast],
+  );
+
+  useEffect(() => {
+    const toastTimeouts = toastTimeoutsRef.current;
+
+    return () => {
+      toastTimeouts.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+    };
+  }, []);
 
   function applyGameState(nextGame: GameSession) {
     const previousGame = gameRef.current;
@@ -81,18 +137,40 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     }
 
     setGame(nextGame);
-    setGameId(nextGame.id);
   }
 
-  function resetGameState() {
+  const resetGameState = useCallback(() => {
     setSelected(null);
     setGame(null);
     setGameId("");
     setPlayerColor(null);
     setJoinGameId("");
     setCopied(false);
+    setResultModal(null);
     setView("create");
-  }
+  }, []);
+
+  const applySyncedGameState = useEffectEvent((nextGame: GameSession) => {
+    const hadSyncMiss =
+      syncMissingCountRef.current > 0 ||
+      hasShownLiveSyncFallbackToastRef.current;
+
+    syncMissingCountRef.current = 0;
+    hasShownLiveSyncFallbackToastRef.current = false;
+    hasShownSyncUnavailableToastRef.current = false;
+    applyGameState(nextGame);
+
+    if (hadSyncMiss) {
+      showToast(
+        {
+          kind: "success",
+          title: "Signal restored",
+          message: "The match is synced again.",
+        },
+        2800,
+      );
+    }
+  });
 
   const syncGame = useEffectEvent(async (silent = true) => {
     if (!gameId) {
@@ -101,20 +179,36 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
     try {
       const nextGame = await getGameFromServer(gameApiUrl, gameId);
-      applyGameState(nextGame);
+      applySyncedGameState(nextGame);
     } catch (error) {
       if (
         error instanceof GameApiError &&
         (error.status === 404 || error.status === 403)
       ) {
-        resetGameState();
+        syncMissingCountRef.current += 1;
 
-        if (!hasHandledTerminalSyncErrorRef.current) {
-          hasHandledTerminalSyncErrorRef.current = true;
-          alert(
-            error.status === 404
-              ? "This game is no longer available. Create or join a new game."
-              : getGameApiErrorMessage(error),
+        if (!hasShownSyncUnavailableToastRef.current) {
+          hasShownSyncUnavailableToastRef.current = true;
+          showToast(
+            {
+              kind: error.status === 404 ? "info" : "error",
+              title: error.status === 404 ? "Reconnecting" : "Sync blocked",
+              message:
+                error.status === 404
+                  ? "The server missed this game for a moment. Your board stays open while it retries."
+                  : getGameApiErrorMessage(error),
+            },
+            6500,
+          );
+        } else if (syncMissingCountRef.current === 6) {
+          showToast(
+            {
+              kind: "error",
+              title: "Still searching",
+              message:
+                "The board is still open, but the server cannot find this match yet.",
+            },
+            8000,
           );
         }
 
@@ -122,7 +216,11 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       }
 
       if (!silent) {
-        alert(getGameApiErrorMessage(error));
+        showToast({
+          kind: "error",
+          title: "Request failed",
+          message: getGameApiErrorMessage(error),
+        });
       }
     }
   });
@@ -132,19 +230,92 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       return;
     }
 
+    let eventSource: EventSource | null = null;
+
     const timeoutId = window.setTimeout(() => {
       void syncGame(true);
     }, 0);
 
-    const intervalId = window.setInterval(() => {
+    const fallbackIntervalId = window.setInterval(() => {
       void syncGame(true);
-    }, pollIntervalMs);
+    }, fallbackPollIntervalMs);
+
+    if ("EventSource" in window) {
+      eventSource = new EventSource(getGameStreamUrl(gameApiUrl, gameId));
+
+      eventSource.addEventListener("game", ((event: MessageEvent<string>) => {
+        try {
+          const payload = JSON.parse(event.data) as unknown;
+
+          if (isGameSessionPayload(payload)) {
+            applySyncedGameState(payload);
+          }
+        } catch {
+          showToast({
+            kind: "error",
+            title: "Live sync failed",
+            message: "The server sent a game update that could not be read.",
+          });
+        }
+      }) as EventListener);
+
+      eventSource.addEventListener(
+        "game-error",
+        ((event: MessageEvent<string>) => {
+          try {
+            const payload = JSON.parse(event.data) as {
+              message?: unknown;
+              status?: unknown;
+            };
+
+            if (!hasShownSyncUnavailableToastRef.current) {
+              hasShownSyncUnavailableToastRef.current = true;
+              showToast({
+                kind: payload.status === 404 ? "info" : "error",
+                title: payload.status === 404 ? "Reconnecting" : "Sync blocked",
+                message:
+                  typeof payload.message === "string"
+                    ? payload.message
+                    : "The live game stream could not load this match.",
+              });
+            }
+          } catch {
+            showToast({
+              kind: "error",
+              title: "Live sync failed",
+              message: "The live game stream reported an unreadable error.",
+            });
+          }
+        }) as EventListener,
+      );
+
+      eventSource.addEventListener("error", () => {
+        if (!hasShownLiveSyncFallbackToastRef.current) {
+          hasShownLiveSyncFallbackToastRef.current = true;
+          showToast({
+            kind: "info",
+            title: "Live sync reconnecting",
+            message: "The game is using backup sync until the stream returns.",
+          });
+        }
+
+        void syncGame(true);
+      });
+    } else {
+      hasShownLiveSyncFallbackToastRef.current = true;
+      showToast({
+        kind: "info",
+        title: "Live sync unavailable",
+        message: "This browser is using backup sync for game updates.",
+      });
+    }
 
     return () => {
+      eventSource?.close();
       window.clearTimeout(timeoutId);
-      window.clearInterval(intervalId);
+      window.clearInterval(fallbackIntervalId);
     };
-  }, [gameId, view]);
+  }, [gameApiUrl, gameId, showToast, view]);
 
   const board = game?.board ?? initialBoard;
   const turn = game?.turn ?? "r";
@@ -160,6 +331,52 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         ? "YOUR TURN"
         : "OPPONENT'S TURN";
 
+  const returnHomeAfterResult = useCallback(() => {
+    handledResultGameIdRef.current = null;
+    hasShownLiveSyncFallbackToastRef.current = false;
+    hasShownSyncUnavailableToastRef.current = false;
+    syncMissingCountRef.current = 0;
+    setIsSubmittingMove(false);
+    resetGameState();
+  }, [resetGameState]);
+
+  useEffect(() => {
+    if (
+      !game?.winner ||
+      !playerColor ||
+      handledResultGameIdRef.current === game.id
+    ) {
+      return;
+    }
+
+    const winnerColor = game.winner;
+    const loserColor = winnerColor === "r" ? "b" : "r";
+    const outcome = winnerColor === playerColor ? "winner" : "loser";
+    const winnerName =
+      game.players[winnerColor] ?? (winnerColor === "r" ? "Red" : "Black");
+    const loserName =
+      game.players[loserColor] ?? (loserColor === "r" ? "Red" : "Black");
+
+    handledResultGameIdRef.current = game.id;
+    setResultModal({
+      loserName,
+      outcome,
+      winnerColor,
+      winnerName,
+    });
+    showToast(
+      {
+        kind: outcome === "winner" ? "success" : "info",
+        title: outcome === "winner" ? "Victory locked" : "Match complete",
+        message:
+          outcome === "winner"
+            ? "The board is yours."
+            : `${winnerName} won this round.`,
+      },
+      5000,
+    );
+  }, [game, playerColor, showToast]);
+
   async function createGame() {
     const trimmedName = playerName.trim();
 
@@ -172,14 +389,27 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     try {
       const nextGame = await createGameOnServer(gameApiUrl, trimmedName);
 
-      hasHandledTerminalSyncErrorRef.current = false;
+      handledResultGameIdRef.current = null;
+      hasShownLiveSyncFallbackToastRef.current = false;
+      hasShownSyncUnavailableToastRef.current = false;
+      syncMissingCountRef.current = 0;
       setPlayerName(trimmedName);
       setPlayerColor("r");
       setJoinGameId("");
+      setGameId(nextGame.id);
       setView("game");
       applyGameState(nextGame);
+      showToast({
+        kind: "info",
+        title: "Game created",
+        message: "Share the game id with your opponent.",
+      });
     } catch (error) {
-      alert(getGameApiErrorMessage(error));
+      showToast({
+        kind: "error",
+        title: "Create failed",
+        message: getGameApiErrorMessage(error),
+      });
     } finally {
       setIsBusy(false);
     }
@@ -202,14 +432,27 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         trimmedName,
       );
 
-      hasHandledTerminalSyncErrorRef.current = false;
+      handledResultGameIdRef.current = null;
+      hasShownLiveSyncFallbackToastRef.current = false;
+      hasShownSyncUnavailableToastRef.current = false;
+      syncMissingCountRef.current = 0;
       setPlayerName(trimmedName);
       setPlayerColor("b");
       setJoinGameId(normalizedGameId);
+      setGameId(nextGame.id);
       setView("game");
       applyGameState(nextGame);
+      showToast({
+        kind: "success",
+        title: "Joined game",
+        message: "You are playing black.",
+      });
     } catch (error) {
-      alert(getGameApiErrorMessage(error));
+      showToast({
+        kind: "error",
+        title: "Join failed",
+        message: getGameApiErrorMessage(error),
+      });
     } finally {
       setIsBusy(false);
     }
@@ -261,7 +504,11 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       setSelected(null);
       applyGameState(nextGame);
     } catch (error) {
-      alert(getGameApiErrorMessage(error));
+      showToast({
+        kind: "error",
+        title: "Move failed",
+        message: getGameApiErrorMessage(error),
+      });
     } finally {
       setIsSubmittingMove(false);
     }
@@ -278,18 +525,43 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       window.setTimeout(() => {
         setCopied(false);
       }, 2000);
+      showToast(
+        {
+          kind: "success",
+          title: "Game id copied",
+          message: "Send it to your opponent.",
+        },
+        2400,
+      );
     } catch {
-      alert("Could not copy the game id.");
+      showToast({
+        kind: "error",
+        title: "Copy failed",
+        message: "Could not copy the game id.",
+      });
     }
   }
 
   function exitGame() {
-    hasHandledTerminalSyncErrorRef.current = false;
+    handledResultGameIdRef.current = null;
+    hasShownLiveSyncFallbackToastRef.current = false;
+    hasShownSyncUnavailableToastRef.current = false;
+    syncMissingCountRef.current = 0;
     resetGameState();
+    showToast({
+      kind: "info",
+      title: "Exited game",
+      message: "You are back at the home screen.",
+    });
   }
 
   return (
     <>
+      <GameToastStack onDismiss={dismissToast} toasts={toasts} />
+      {resultModal && (
+        <GameResultModal {...resultModal} onHome={returnHomeAfterResult} />
+      )}
+
       <div
         className={`${view === "create" ? "flex" : "hidden"} w-full min-h-dvh items-center justify-center px-4 py-6 sm:px-8`}
       >
