@@ -1,14 +1,20 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 import type { GameSession, PlayerColor } from "@/lib/checkers";
 
 const SESSION_STORE_SEED_PATH = join(process.cwd(), "data", "sessions.json");
-const SESSION_STORE_RUNTIME_PATH = join(
-  process.cwd(),
-  "data",
-  ".sessions.runtime.json",
-);
+
+function getRuntimeSessionStorePath(): string {
+  if (process.env.VERCEL) {
+    return join(tmpdir(), "game-recreation", ".sessions.runtime.json");
+  }
+
+  return join(process.cwd(), "data", ".sessions.runtime.json");
+}
+
+const SESSION_STORE_RUNTIME_PATH = getRuntimeSessionStorePath();
 const SESSION_STORE_DIRECTORY = dirname(SESSION_STORE_RUNTIME_PATH);
 
 type SessionStoreData = {

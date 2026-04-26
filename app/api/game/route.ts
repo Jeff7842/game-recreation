@@ -30,6 +30,7 @@ type GameRequestBody =
     };
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type",
@@ -66,6 +67,8 @@ function getErrorResponse(error: unknown): Response {
   if (error instanceof GameServiceError) {
     return jsonResponse({ error: error.message }, { status: error.status });
   }
+
+  console.error("Game API failed:", error);
 
   return jsonResponse(
     { error: "Something went wrong while handling the game request." },
