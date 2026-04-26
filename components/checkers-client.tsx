@@ -17,8 +17,6 @@ import {
   createGameOnServer,
   getGameApiErrorMessage,
   getGameFromServer,
-  getGameStreamUrl,
-  isGameSessionPayload,
   joinGameOnServer,
   movePieceOnServer,
 } from "@/apis/game-api-client";
@@ -32,7 +30,7 @@ import {
 } from "@/components/game-toast";
 
 const defaultScore = { r: 12, b: 12 };
-const fallbackPollIntervalMs = 30000;
+const pollIntervalMs = 1500;
 
 type SelectedCell = {
   x: number;
@@ -78,7 +76,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const [toasts, setToasts] = useState<GameToastItem[]>([]);
   const gameRef = useRef<GameSession | null>(null);
   const handledResultGameIdRef = useRef<string | null>(null);
-  const hasShownLiveSyncFallbackToastRef = useRef(false);
   const hasShownSyncUnavailableToastRef = useRef(false);
   const syncMissingCountRef = useRef(0);
   const toastIdRef = useRef(0);
@@ -151,12 +148,9 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }, []);
 
   const applySyncedGameState = useEffectEvent((nextGame: GameSession) => {
-    const hadSyncMiss =
-      syncMissingCountRef.current > 0 ||
-      hasShownLiveSyncFallbackToastRef.current;
+    const hadSyncMiss = syncMissingCountRef.current > 0;
 
     syncMissingCountRef.current = 0;
-    hasShownLiveSyncFallbackToastRef.current = false;
     hasShownSyncUnavailableToastRef.current = false;
     applyGameState(nextGame);
 
@@ -164,7 +158,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       showToast(
         {
           kind: "success",
-          title: "Signal restored",
+          title: "Board restored",
           message: "The match is synced again.",
         },
         2800,
@@ -230,92 +224,19 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       return;
     }
 
-    let eventSource: EventSource | null = null;
-
     const timeoutId = window.setTimeout(() => {
       void syncGame(true);
     }, 0);
 
-    const fallbackIntervalId = window.setInterval(() => {
+    const intervalId = window.setInterval(() => {
       void syncGame(true);
-    }, fallbackPollIntervalMs);
-
-    if ("EventSource" in window) {
-      eventSource = new EventSource(getGameStreamUrl(gameApiUrl, gameId));
-
-      eventSource.addEventListener("game", ((event: MessageEvent<string>) => {
-        try {
-          const payload = JSON.parse(event.data) as unknown;
-
-          if (isGameSessionPayload(payload)) {
-            applySyncedGameState(payload);
-          }
-        } catch {
-          showToast({
-            kind: "error",
-            title: "Live sync failed",
-            message: "The server sent a game update that could not be read.",
-          });
-        }
-      }) as EventListener);
-
-      eventSource.addEventListener(
-        "game-error",
-        ((event: MessageEvent<string>) => {
-          try {
-            const payload = JSON.parse(event.data) as {
-              message?: unknown;
-              status?: unknown;
-            };
-
-            if (!hasShownSyncUnavailableToastRef.current) {
-              hasShownSyncUnavailableToastRef.current = true;
-              showToast({
-                kind: payload.status === 404 ? "info" : "error",
-                title: payload.status === 404 ? "Reconnecting" : "Sync blocked",
-                message:
-                  typeof payload.message === "string"
-                    ? payload.message
-                    : "The live game stream could not load this match.",
-              });
-            }
-          } catch {
-            showToast({
-              kind: "error",
-              title: "Live sync failed",
-              message: "The live game stream reported an unreadable error.",
-            });
-          }
-        }) as EventListener,
-      );
-
-      eventSource.addEventListener("error", () => {
-        if (!hasShownLiveSyncFallbackToastRef.current) {
-          hasShownLiveSyncFallbackToastRef.current = true;
-          showToast({
-            kind: "info",
-            title: "Live sync reconnecting",
-            message: "The game is using backup sync until the stream returns.",
-          });
-        }
-
-        void syncGame(true);
-      });
-    } else {
-      hasShownLiveSyncFallbackToastRef.current = true;
-      showToast({
-        kind: "info",
-        title: "Live sync unavailable",
-        message: "This browser is using backup sync for game updates.",
-      });
-    }
+    }, pollIntervalMs);
 
     return () => {
-      eventSource?.close();
       window.clearTimeout(timeoutId);
-      window.clearInterval(fallbackIntervalId);
+      window.clearInterval(intervalId);
     };
-  }, [gameApiUrl, gameId, showToast, view]);
+  }, [gameId, view]);
 
   const board = game?.board ?? initialBoard;
   const turn = game?.turn ?? "r";
@@ -333,7 +254,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
   const returnHomeAfterResult = useCallback(() => {
     handledResultGameIdRef.current = null;
-    hasShownLiveSyncFallbackToastRef.current = false;
     hasShownSyncUnavailableToastRef.current = false;
     syncMissingCountRef.current = 0;
     setIsSubmittingMove(false);
@@ -390,7 +310,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       const nextGame = await createGameOnServer(gameApiUrl, trimmedName);
 
       handledResultGameIdRef.current = null;
-      hasShownLiveSyncFallbackToastRef.current = false;
       hasShownSyncUnavailableToastRef.current = false;
       syncMissingCountRef.current = 0;
       setPlayerName(trimmedName);
@@ -433,7 +352,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       );
 
       handledResultGameIdRef.current = null;
-      hasShownLiveSyncFallbackToastRef.current = false;
       hasShownSyncUnavailableToastRef.current = false;
       syncMissingCountRef.current = 0;
       setPlayerName(trimmedName);
@@ -544,7 +462,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
   function exitGame() {
     handledResultGameIdRef.current = null;
-    hasShownLiveSyncFallbackToastRef.current = false;
     hasShownSyncUnavailableToastRef.current = false;
     syncMissingCountRef.current = 0;
     resetGameState();

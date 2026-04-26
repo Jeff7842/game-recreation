@@ -11,7 +11,6 @@ import {
   hasStoredSessionId,
   persistStoredSession,
 } from "@/apis/json-session-store";
-import { publishGameUpdate } from "@/apis/game-event-stream";
 
 export class GameServiceError extends Error {
   status: number;
@@ -101,11 +100,7 @@ async function getStoredGame(gameId: string): Promise<GameSession> {
 
 async function saveGame(game: GameSession): Promise<GameSession> {
   const storedSession = await persistStoredSession(game);
-  const savedGame = cloneGame(storedSession.game);
-
-  publishGameUpdate(savedGame);
-
-  return savedGame;
+  return cloneGame(storedSession.game);
 }
 
 export async function createGame(playerName: string): Promise<GameSession> {

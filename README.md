@@ -58,8 +58,6 @@ pnpm dev
   Returns a game session by id.
 - `GET /api/game?gameId=<GAME_ID>`
   Also works. This is here so production links can use a clear name.
-- `GET /api/game/stream?id=<GAME_ID>`
-  Opens a Server-Sent Events stream for live game updates. Browsers use this instead of fast polling while a match is open.
 - `POST /api/game`
   Uses one of these actions:
   - `{ "action": "create", "playerName": "..." }`
