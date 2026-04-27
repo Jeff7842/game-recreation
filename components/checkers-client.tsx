@@ -30,7 +30,7 @@ import {
 } from "@/components/game-toast";
 
 const defaultScore = { r: 12, b: 12 };
-const pollIntervalMs = 1500;
+const persistedSessionKey = "checkers-active-session";
 
 type SelectedCell = {
   x: number;
@@ -42,6 +42,87 @@ type View = "create" | "join" | "game";
 type CheckersClientProps = {
   gameApiUrl: string;
 };
+
+type PersistedSession = {
+  gameId: string;
+  playerColor: PlayerColor;
+  playerName: string;
+};
+
+function canUseLocalStorage(): boolean {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function isPlayerColor(value: unknown): value is PlayerColor {
+  return value === "r" || value === "b";
+}
+
+function readPersistedSession(): PersistedSession | null {
+  if (!canUseLocalStorage()) {
+    return null;
+  }
+
+  try {
+    const rawSession = window.localStorage.getItem(persistedSessionKey);
+
+    if (!rawSession) {
+      return null;
+    }
+
+    const parsedSession = JSON.parse(rawSession) as {
+      gameId?: unknown;
+      playerColor?: unknown;
+      playerName?: unknown;
+    };
+
+    if (
+      typeof parsedSession?.gameId !== "string" ||
+      typeof parsedSession?.playerName !== "string" ||
+      !isPlayerColor(parsedSession?.playerColor)
+    ) {
+      return null;
+    }
+
+    const normalizedGameId = parsedSession.gameId.trim().toUpperCase();
+    const normalizedPlayerName = parsedSession.playerName.trim();
+
+    if (!normalizedGameId || !normalizedPlayerName) {
+      return null;
+    }
+
+    return {
+      gameId: normalizedGameId,
+      playerColor: parsedSession.playerColor,
+      playerName: normalizedPlayerName,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistSession(session: PersistedSession): void {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(persistedSessionKey, JSON.stringify(session));
+  } catch {
+    // Ignore storage write failures (private mode/quota).
+  }
+}
+
+function clearPersistedSession(): void {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(persistedSessionKey);
+  } catch {
+    // Ignore storage clear failures.
+  }
+}
 
 function logCheckersClient(
   message: string,
@@ -69,13 +150,26 @@ function Cell({ piece }: { piece: BoardCell }) {
 export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   logCheckersClient("rendered checkers client", { gameApiUrl });
 
+  const [initialSession] = useState<PersistedSession | null>(() => {
+    const persistedSession = readPersistedSession();
+
+    if (persistedSession) {
+      logCheckersClient("hydrating session from local storage", {
+        gameId: persistedSession.gameId,
+      });
+    }
+
+    return persistedSession;
+  });
   const [selected, setSelected] = useState<SelectedCell | null>(null);
-  const [playerName, setPlayerName] = useState("");
-  const [playerColor, setPlayerColor] = useState<PlayerColor | null>(null);
-  const [gameId, setGameId] = useState("");
+  const [playerName, setPlayerName] = useState(initialSession?.playerName ?? "");
+  const [playerColor, setPlayerColor] = useState<PlayerColor | null>(
+    initialSession?.playerColor ?? null,
+  );
+  const [gameId, setGameId] = useState(initialSession?.gameId ?? "");
   const [game, setGame] = useState<GameSession | null>(null);
-  const [view, setView] = useState<View>("create");
-  const [joinGameId, setJoinGameId] = useState("");
+  const [view, setView] = useState<View>(initialSession ? "game" : "create");
+  const [joinGameId, setJoinGameId] = useState(initialSession?.gameId ?? "");
   const [copied, setCopied] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [isSubmittingMove, setIsSubmittingMove] = useState(false);
@@ -85,10 +179,27 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const [toasts, setToasts] = useState<GameToastItem[]>([]);
   const gameRef = useRef<GameSession | null>(null);
   const handledResultGameIdRef = useRef<string | null>(null);
+  const syncedGameIdRef = useRef<string | null>(null);
   const hasShownSyncUnavailableToastRef = useRef(false);
   const syncMissingCountRef = useRef(0);
   const toastIdRef = useRef(0);
   const toastTimeoutsRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    const normalizedGameId = gameId.trim().toUpperCase();
+    const normalizedPlayerName = playerName.trim();
+
+    if (view !== "game" || !normalizedGameId || !normalizedPlayerName || !playerColor) {
+      clearPersistedSession();
+      return;
+    }
+
+    persistSession({
+      gameId: normalizedGameId,
+      playerColor,
+      playerName: normalizedPlayerName,
+    });
+  }, [gameId, playerColor, playerName, view]);
 
   useEffect(() => {
     logCheckersClient("game ref updated", { gameId: game?.id });
@@ -158,6 +269,8 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
   const resetGameState = useCallback(() => {
     logCheckersClient("resetting game state");
+    clearPersistedSession();
+    syncedGameIdRef.current = null;
     setSelected(null);
     setGame(null);
     setGameId("");
@@ -254,19 +367,15 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       return;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      void syncGame(true);
-    }, 0);
+    if (syncedGameIdRef.current === gameId) {
+      logCheckersClient("sync skipped because game id was already picked", {
+        gameId,
+      });
+      return;
+    }
 
-    const intervalId = window.setInterval(() => {
-      void syncGame(true);
-    }, pollIntervalMs);
-
-    return () => {
-      logCheckersClient("stopping sync interval", { gameId });
-      window.clearTimeout(timeoutId);
-      window.clearInterval(intervalId);
-    };
+    syncedGameIdRef.current = gameId;
+    void syncGame(true);
   }, [gameId, view]);
 
   const board = game?.board ?? initialBoard;

@@ -1,3 +1,5 @@
+import { log } from "node:console";
+
 export const pieces = {
   r: "/checkers/red.png",
   b: "/checkers/black.png",
@@ -10,6 +12,10 @@ export type BoardCell = PieceKey | ".";
 export type PlayerColor = "r" | "b";
 export type Score = Record<PlayerColor, number>;
 export type Board = BoardCell[][];
+
+function logCheckers(message: string, details?: Record<string, unknown>): void {
+  console.log(`[game-service] ${message}`, details ?? "");
+}
 
 export type GameSession = {
   id: string;
@@ -44,14 +50,19 @@ export const initialBoard: Board = [
 ];
 
 export function cloneBoard(board: Board): Board {
+  logCheckers("Unable to clone board, invalid input", { board });
   return board.map((row) => [...row]);
 }
 
 export function createInitialBoard(): Board {
+  logCheckers("Creating initial board state");
+
   return cloneBoard(initialBoard);
 }
 
 export function getPieceColor(piece: BoardCell): PlayerColor | null {
+
+  logCheckers("Getting piece color", { piece });
   if (piece === ".") {
     return null;
   }
@@ -195,6 +206,8 @@ export function generateGameId(existingIds: { has(id: string): boolean }): strin
       id += chars[Math.floor(Math.random() * chars.length)];
     }
   } while (existingIds.has(id));
+
+  logCheckers("Generated unique game ID", { gameId: id });
 
   return id;
 }

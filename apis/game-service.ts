@@ -30,10 +30,6 @@ type MoveInput = {
   toY: number;
 };
 
-function logGameService(message: string, details?: Record<string, unknown>): void {
-  console.log(`[game-service] ${message}`, details ?? "");
-}
-
 function cloneGame(game: GameSession): GameSession {
   return {
     ...game,
@@ -54,22 +50,16 @@ function createRandomGameId(): string {
     id += GAME_ID_CHARS[Math.floor(Math.random() * GAME_ID_CHARS.length)];
   }
 
-  logGameService("created random game id", { gameId: id });
   return id;
 }
 
 async function generateUniqueGameId(): Promise<string> {
-  logGameService("generating unique game id");
-
   for (let attempt = 0; attempt < MAX_GAME_ID_ATTEMPTS; attempt += 1) {
     const gameId = createRandomGameId();
 
     if (!(await hasStoredSessionId(gameId))) {
-      logGameService("unique game id accepted", { attempt: attempt + 1, gameId });
       return gameId;
     }
-
-    logGameService("game id collision found", { attempt: attempt + 1, gameId });
   }
 
   throw new GameServiceError(
@@ -80,9 +70,6 @@ async function generateUniqueGameId(): Promise<string> {
 
 function normalizePlayerName(playerName: string): string {
   const normalized = playerName.trim();
-  logGameService("normalized player name", {
-    hasPlayerName: Boolean(normalized),
-  });
 
   if (!normalized) {
     throw new GameServiceError("Player name is required.", 400);
@@ -93,7 +80,6 @@ function normalizePlayerName(playerName: string): string {
 
 function normalizeGameId(gameId: string): string {
   const normalized = gameId.trim().toUpperCase();
-  logGameService("normalized game id", { gameId: normalized });
 
   if (!normalized) {
     throw new GameServiceError("Game id is required.", 400);
@@ -103,10 +89,7 @@ function normalizeGameId(gameId: string): string {
 }
 
 async function getStoredGame(gameId: string): Promise<GameSession> {
-  const normalizedGameId = normalizeGameId(gameId);
-  logGameService("loading stored game", { gameId: normalizedGameId });
-
-  const storedSession = await findStoredSessionById(normalizedGameId);
+  const storedSession = await findStoredSessionById(normalizeGameId(gameId));
 
   if (!storedSession) {
     throw new GameServiceError("Game not found.", 404);
@@ -116,17 +99,11 @@ async function getStoredGame(gameId: string): Promise<GameSession> {
 }
 
 async function saveGame(game: GameSession): Promise<GameSession> {
-  logGameService("saving game", {
-    gameId: game.id,
-    turn: game.turn,
-    winner: game.winner,
-  });
   const storedSession = await persistStoredSession(game);
   return cloneGame(storedSession.game);
 }
 
 export async function createGame(playerName: string): Promise<GameSession> {
-  logGameService("creating game");
   const redPlayer = normalizePlayerName(playerName);
   const id = await generateUniqueGameId();
 
@@ -147,7 +124,6 @@ export async function createGame(playerName: string): Promise<GameSession> {
 }
 
 export function getGame(gameId: string): Promise<GameSession> {
-  logGameService("getting game", { gameId });
   return getStoredGame(gameId);
 }
 
@@ -155,7 +131,6 @@ export async function joinGame(
   gameId: string,
   playerName: string,
 ): Promise<GameSession> {
-  logGameService("joining game", { gameId });
   const game = await getStoredGame(gameId);
   const blackPlayer = normalizePlayerName(playerName);
 
@@ -171,14 +146,6 @@ export async function submitMove(
   gameId: string,
   move: MoveInput,
 ): Promise<GameSession> {
-  logGameService("submitting move", {
-    fromX: move.fromX,
-    fromY: move.fromY,
-    gameId,
-    playerColor: move.playerColor,
-    toX: move.toX,
-    toY: move.toY,
-  });
   const game = await getStoredGame(gameId);
 
   if (!game.players.b) {
@@ -213,7 +180,6 @@ export async function submitMove(
   );
 
   if (!nextState) {
-    logGameService("move rejected by checker rules", { gameId });
     throw new GameServiceError("Invalid move.", 409);
   }
 
@@ -222,10 +188,5 @@ export async function submitMove(
   game.turn = nextState.turn;
   game.winner = nextState.winner;
 
-  logGameService("move applied", {
-    gameId: game.id,
-    nextTurn: game.turn,
-    winner: game.winner,
-  });
   return saveGame(game);
 }
