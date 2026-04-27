@@ -38,7 +38,12 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
 };
 
+function logGameApi(message: string, details?: Record<string, unknown>): void {
+  console.log(`[game-api] ${message}`, details ?? "");
+}
+
 function withCors(init: ResponseInit = {}): ResponseInit {
+  logGameApi("applying CORS headers", { status: init.status });
   const headers = new Headers(init.headers);
 
   Object.entries(corsHeaders).forEach(([name, value]) => {
@@ -52,6 +57,7 @@ function withCors(init: ResponseInit = {}): ResponseInit {
 }
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  logGameApi("sending JSON response", { status: init?.status ?? 200 });
   return Response.json(body, withCors(init));
 }
 
@@ -65,6 +71,10 @@ function isNumber(value: unknown): value is number {
 
 function getErrorResponse(error: unknown): Response {
   if (error instanceof GameServiceError) {
+    logGameApi("handled game service error", {
+      message: error.message,
+      status: error.status,
+    });
     return jsonResponse({ error: error.message }, { status: error.status });
   }
 
@@ -82,15 +92,18 @@ function getGameIdFromRequest(request: NextRequest): string | null {
     request.nextUrl.searchParams.get("gameId") ??
     request.headers.get("x-game-id");
 
+  logGameApi("read game id from request", { gameId });
   return gameId?.trim() ? gameId : null;
 }
 
 export function OPTIONS() {
+  logGameApi("OPTIONS request received");
   return new Response(null, withCors({ status: 204 }));
 }
 
 export async function GET(request: NextRequest) {
   try {
+    logGameApi("GET request received");
     const gameId = getGameIdFromRequest(request);
 
     if (!gameId) {
@@ -100,6 +113,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    logGameApi("GET game request accepted", { gameId });
     return jsonResponse(await getGame(gameId));
   } catch (error) {
     return getErrorResponse(error);
@@ -108,7 +122,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: Request) {
   try {
+    logGameApi("POST request received");
     const body = (await request.json()) as GameRequestBody;
+    logGameApi("POST body parsed", { action: body.action });
 
     switch (body.action) {
       case "create":
@@ -116,6 +132,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Player name is required.", 400);
         }
 
+        logGameApi("create action accepted");
         return jsonResponse(await createGame(body.playerName));
 
       case "join":
@@ -127,6 +144,7 @@ export async function POST(request: Request) {
           throw new GameServiceError("Player name is required.", 400);
         }
 
+        logGameApi("join action accepted", { gameId: body.gameId });
         return jsonResponse(await joinGame(body.gameId, body.playerName));
 
       case "move":
@@ -147,6 +165,10 @@ export async function POST(request: Request) {
           throw new GameServiceError("Move coordinates are required.", 400);
         }
 
+        logGameApi("move action accepted", {
+          gameId: body.gameId,
+          playerColor: body.playerColor,
+        });
         return jsonResponse(
           await submitMove(body.gameId, {
             fromX: body.fromX,

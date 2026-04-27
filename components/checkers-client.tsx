@@ -43,6 +43,13 @@ type CheckersClientProps = {
   gameApiUrl: string;
 };
 
+function logCheckersClient(
+  message: string,
+  details?: Record<string, unknown>,
+): void {
+  console.log(`[checkers-client] ${message}`, details ?? "");
+}
+
 function Cell({ piece }: { piece: BoardCell }) {
   if (piece === ".") {
     return null;
@@ -60,6 +67,8 @@ function Cell({ piece }: { piece: BoardCell }) {
 }
 
 export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
+  logCheckersClient("rendered checkers client", { gameApiUrl });
+
   const [selected, setSelected] = useState<SelectedCell | null>(null);
   const [playerName, setPlayerName] = useState("");
   const [playerColor, setPlayerColor] = useState<PlayerColor | null>(null);
@@ -82,10 +91,12 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const toastTimeoutsRef = useRef<number[]>([]);
 
   useEffect(() => {
+    logCheckersClient("game ref updated", { gameId: game?.id });
     gameRef.current = game;
   }, [game]);
 
   const dismissToast = useCallback((toastId: number) => {
+    logCheckersClient("dismissing toast", { toastId });
     setToasts((currentToasts) =>
       currentToasts.filter((toast) => toast.id !== toastId),
     );
@@ -96,6 +107,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       toast: Omit<GameToastItem, "id">,
       durationMs = toast.kind === "error" ? 6500 : 4200,
     ) => {
+      logCheckersClient("showing toast", { kind: toast.kind, title: toast.title });
       toastIdRef.current += 1;
       const toastId = toastIdRef.current;
 
@@ -116,6 +128,9 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     const toastTimeouts = toastTimeoutsRef.current;
 
     return () => {
+      logCheckersClient("clearing toast timeouts", {
+        count: toastTimeouts.length,
+      });
       toastTimeouts.forEach((timeoutId) => {
         window.clearTimeout(timeoutId);
       });
@@ -123,6 +138,11 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }, []);
 
   function applyGameState(nextGame: GameSession) {
+    logCheckersClient("applying game state", {
+      gameId: nextGame.id,
+      turn: nextGame.turn,
+      winner: nextGame.winner,
+    });
     const previousGame = gameRef.current;
 
     if (
@@ -137,6 +157,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }
 
   const resetGameState = useCallback(() => {
+    logCheckersClient("resetting game state");
     setSelected(null);
     setGame(null);
     setGameId("");
@@ -148,6 +169,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }, []);
 
   const applySyncedGameState = useEffectEvent((nextGame: GameSession) => {
+    logCheckersClient("applying synced game state", { gameId: nextGame.id });
     const hadSyncMiss = syncMissingCountRef.current > 0;
 
     syncMissingCountRef.current = 0;
@@ -167,7 +189,10 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   });
 
   const syncGame = useEffectEvent(async (silent = true) => {
+    logCheckersClient("sync requested", { gameId, silent });
+
     if (!gameId) {
+      logCheckersClient("sync skipped because no game id is active");
       return;
     }
 
@@ -175,6 +200,9 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       const nextGame = await getGameFromServer(gameApiUrl, gameId);
       applySyncedGameState(nextGame);
     } catch (error) {
+      logCheckersClient("sync failed", {
+        message: getGameApiErrorMessage(error),
+      });
       if (
         error instanceof GameApiError &&
         (error.status === 404 || error.status === 403)
@@ -220,6 +248,8 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   });
 
   useEffect(() => {
+    logCheckersClient("sync effect evaluated", { gameId, view });
+
     if (view !== "game" || !gameId) {
       return;
     }
@@ -233,6 +263,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     }, pollIntervalMs);
 
     return () => {
+      logCheckersClient("stopping sync interval", { gameId });
       window.clearTimeout(timeoutId);
       window.clearInterval(intervalId);
     };
@@ -253,6 +284,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         : "OPPONENT'S TURN";
 
   const returnHomeAfterResult = useCallback(() => {
+    logCheckersClient("returning home after result");
     handledResultGameIdRef.current = null;
     hasShownSyncUnavailableToastRef.current = false;
     syncMissingCountRef.current = 0;
@@ -261,6 +293,12 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }, [resetGameState]);
 
   useEffect(() => {
+    logCheckersClient("result modal effect evaluated", {
+      gameId: game?.id,
+      playerColor,
+      winner: game?.winner,
+    });
+
     if (
       !game?.winner ||
       !playerColor ||
@@ -298,9 +336,14 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }, [game, playerColor, showToast]);
 
   async function createGame() {
+    logCheckersClient("create game clicked");
     const trimmedName = playerName.trim();
 
     if (!trimmedName || isBusy) {
+      logCheckersClient("create game skipped", {
+        hasPlayerName: Boolean(trimmedName),
+        isBusy,
+      });
       return;
     }
 
@@ -308,6 +351,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
     try {
       const nextGame = await createGameOnServer(gameApiUrl, trimmedName);
+      logCheckersClient("game created", { gameId: nextGame.id });
 
       handledResultGameIdRef.current = null;
       hasShownSyncUnavailableToastRef.current = false;
@@ -324,6 +368,9 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         message: "Share the game id with your opponent.",
       });
     } catch (error) {
+      logCheckersClient("create game failed", {
+        message: getGameApiErrorMessage(error),
+      });
       showToast({
         kind: "error",
         title: "Create failed",
@@ -335,10 +382,16 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }
 
   async function joinGame() {
+    logCheckersClient("join game clicked");
     const trimmedName = playerName.trim();
     const normalizedGameId = joinGameId.trim().toUpperCase();
 
     if (!trimmedName || !normalizedGameId || isBusy) {
+      logCheckersClient("join game skipped", {
+        gameId: normalizedGameId,
+        hasPlayerName: Boolean(trimmedName),
+        isBusy,
+      });
       return;
     }
 
@@ -350,6 +403,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         normalizedGameId,
         trimmedName,
       );
+      logCheckersClient("game joined", { gameId: nextGame.id });
 
       handledResultGameIdRef.current = null;
       hasShownSyncUnavailableToastRef.current = false;
@@ -366,6 +420,9 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         message: "You are playing black.",
       });
     } catch (error) {
+      logCheckersClient("join game failed", {
+        message: getGameApiErrorMessage(error),
+      });
       showToast({
         kind: "error",
         title: "Join failed",
@@ -377,6 +434,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }
 
   async function handleClick(x: number, y: number) {
+    logCheckersClient("board cell clicked", { x, y });
     const activeGame = gameRef.current;
 
     if (
@@ -387,6 +445,11 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       !activeGame.players.b ||
       activeGame.turn !== playerColor
     ) {
+      logCheckersClient("board click ignored", {
+        gameId: activeGame?.id,
+        hasPlayerColor: Boolean(playerColor),
+        isSubmittingMove,
+      });
       return;
     }
 
@@ -394,6 +457,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
     if (!selected) {
       if (piece !== "." && piece.toLowerCase() === playerColor) {
+        logCheckersClient("piece selected", { x, y, piece });
         setSelected({ x, y });
       }
 
@@ -403,6 +467,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     const move = getValidMove(activeGame.board, selected.x, selected.y, x, y);
 
     if (!move) {
+      logCheckersClient("invalid local move selection", { from: selected, to: { x, y } });
       setSelected(null);
       return;
     }
@@ -419,9 +484,13 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         toY: y,
       });
 
+      logCheckersClient("move submitted", { gameId: nextGame.id });
       setSelected(null);
       applyGameState(nextGame);
     } catch (error) {
+      logCheckersClient("move failed", {
+        message: getGameApiErrorMessage(error),
+      });
       showToast({
         kind: "error",
         title: "Move failed",
@@ -433,12 +502,14 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }
 
   async function copyGameId() {
+    logCheckersClient("copy game id clicked", { gameId });
     if (!gameId) {
       return;
     }
 
     try {
       await navigator.clipboard.writeText(gameId);
+      logCheckersClient("game id copied", { gameId });
       setCopied(true);
       window.setTimeout(() => {
         setCopied(false);
@@ -452,6 +523,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
         2400,
       );
     } catch {
+      logCheckersClient("game id copy failed", { gameId });
       showToast({
         kind: "error",
         title: "Copy failed",
@@ -461,6 +533,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   }
 
   function exitGame() {
+    logCheckersClient("exiting game", { gameId });
     handledResultGameIdRef.current = null;
     hasShownSyncUnavailableToastRef.current = false;
     syncMissingCountRef.current = 0;

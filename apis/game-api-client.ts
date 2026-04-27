@@ -42,8 +42,16 @@ export class GameApiError extends Error {
   }
 }
 
+function logGameApiClient(message: string, details?: Record<string, unknown>): void {
+  console.log(`[game-api-client] ${message}`, details ?? "");
+}
+
 function getBrowserOrigin(): string {
-  return typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  const origin =
+    typeof window === "undefined" ? "http://localhost" : window.location.origin;
+
+  logGameApiClient("resolved browser origin", { origin });
+  return origin;
 }
 
 function buildGameApiUrl(gameApiUrl: string, gameId?: string): string {
@@ -55,10 +63,16 @@ function buildGameApiUrl(gameApiUrl: string, gameId?: string): string {
     url.searchParams.set("id", safeGameId);
   }
 
+  logGameApiClient("built game API URL", {
+    gameId: safeGameId,
+    url: url.toString(),
+  });
   return url.toString();
 }
 
 function getErrorMessageFromPayload(payload: unknown): string | null {
+  logGameApiClient("reading error message from payload");
+
   if (!payload || typeof payload !== "object") {
     return null;
   }
@@ -84,6 +98,8 @@ function getErrorMessageFromPayload(payload: unknown): string | null {
 }
 
 function hasGameId(payload: unknown): payload is GameSession {
+  logGameApiClient("validating game response payload");
+
   return (
     !!payload &&
     typeof payload === "object" &&
@@ -94,6 +110,7 @@ function hasGameId(payload: unknown): payload is GameSession {
 }
 
 async function readGameResponse(response: Response): Promise<GameSession> {
+  logGameApiClient("reading game response", { status: response.status });
   const payload = (await response.json().catch(() => null)) as unknown;
 
   if (!response.ok) {
@@ -115,6 +132,7 @@ async function postGame(
   gameApiUrl: string,
   body: GameRequestBody,
 ): Promise<GameSession> {
+  logGameApiClient("posting game request", { action: body.action });
   const response = await fetch(buildGameApiUrl(gameApiUrl), {
     method: "POST",
     headers: {
@@ -130,6 +148,7 @@ export function getGameFromServer(
   gameApiUrl: string,
   gameId: string,
 ): Promise<GameSession> {
+  logGameApiClient("fetching game from server", { gameId });
   return fetch(buildGameApiUrl(gameApiUrl, gameId), {
     cache: "no-store",
   }).then(readGameResponse);
@@ -139,6 +158,7 @@ export function createGameOnServer(
   gameApiUrl: string,
   playerName: string,
 ): Promise<GameSession> {
+  logGameApiClient("creating game on server", { hasPlayerName: Boolean(playerName) });
   return postGame(gameApiUrl, {
     action: "create",
     playerName,
@@ -150,6 +170,10 @@ export function joinGameOnServer(
   gameId: string,
   playerName: string,
 ): Promise<GameSession> {
+  logGameApiClient("joining game on server", {
+    gameId,
+    hasPlayerName: Boolean(playerName),
+  });
   return postGame(gameApiUrl, {
     action: "join",
     gameId,
@@ -161,6 +185,14 @@ export function movePieceOnServer(
   gameApiUrl: string,
   move: MoveInput,
 ): Promise<GameSession> {
+  logGameApiClient("moving piece on server", {
+    fromX: move.fromX,
+    fromY: move.fromY,
+    gameId: move.gameId,
+    playerColor: move.playerColor,
+    toX: move.toX,
+    toY: move.toY,
+  });
   return postGame(gameApiUrl, {
     action: "move",
     ...move,
@@ -168,5 +200,6 @@ export function movePieceOnServer(
 }
 
 export function getGameApiErrorMessage(error: unknown): string {
+  logGameApiClient("getting game API error message");
   return error instanceof Error ? error.message : "Something went wrong.";
 }

@@ -4,20 +4,32 @@ Multiplayer checkers built with Next.js App Router.
 
 ## Change The API URL
 
-The game reads one setting:
+The app reads the game API URL in one place: `lib/game-api-config.ts`.
+
+It checks these environment variables in order:
+
+1. `GAME_API_URL`
+1. `NEXT_PUBLIC_GAME_API_URL`
+
+Use this local default when the UI and API run together:
 
 ```bash
 GAME_API_URL=/api/game
 ```
 
-Keep `/api/game` when the website and API are deployed together.
-Change it to a full URL when the API lives somewhere else:
+Use a full URL when the API lives somewhere else:
 
 ```bash
 GAME_API_URL=https://your-api-site.com/api/game
 ```
 
-That is the only URL the game screen uses for create, join, load, and move.
+Restart the dev server after changing `.env*` files.
+
+The value flows like this:
+
+- `app/page.tsx` reads `getGameApiUrl()`.
+- `components/checkers-client.tsx` receives `gameApiUrl` as a prop.
+- `apis/game-api-client.ts` uses that URL for create, join, load, and move requests.
 
 ## Simple File Map
 
@@ -66,6 +78,8 @@ pnpm dev
 - `GET /api/sessions`
   Returns all stored sessions from the JSON datastore.
 
+If `GAME_API_URL` points to another domain, that API must allow CORS for your site.
+
 ## JSON Datastore
 
 The API repository bootstraps from `data/sessions.json` (tracked seed) and writes active runtime state to `data/.sessions.runtime.json`.
@@ -80,21 +94,20 @@ Each stored session includes:
 
 No environment variables are required for this datastore mode.
 
+## Why Persistence Can Fail
+
+This project's default "database" is a JSON file, not a managed database service.
+
+- Local development writes to `data/.sessions.runtime.json`.
+- On Vercel, runtime writes are redirected to `/tmp/game-recreation/.sessions.runtime.json`.
+- `/tmp` is ephemeral per runtime instance, so cold starts, scale-out, or redeploys can lose active sessions.
+- Common symptom: a game id that existed earlier returns `404 Game not found`.
+
+For reliable production persistence, move writes to a durable database/store used by all instances.
+
 ### Concurrency Notes
 
 The repository serializes mutations and uses atomic file replacement to reduce the risk of JSON corruption during rapid updates.
-
-## Production Session Store
-
-For production, configure a durable Vercel KV or Upstash Redis REST store:
-
-```bash
-KV_REST_API_URL=https://...
-KV_REST_API_TOKEN=...
-SESSION_STORE_NAMESPACE=game-recreation
-```
-
-When `KV_REST_API_URL` and `KV_REST_API_TOKEN` are present, the app stores live matches in KV instead of the runtime JSON file. This prevents active games from disappearing when a serverless function cold starts, moves to another instance, or loses `/tmp` state.
 
 ### Deployment Notes
 
