@@ -25,18 +25,6 @@ type SessionStoreData = {
   sessions: StoredSessionRecord[];
 };
 
-type KvConfig = {
-  restApiToken: string;
-  restApiUrl: string;
-};
-
-type KvCommandPart = number | string;
-
-type KvCommandResponse<T> = {
-  error?: string;
-  result?: T;
-};
-
 export type SessionStatus = "waiting" | "active" | "finished";
 
 export type SessionResult = {
