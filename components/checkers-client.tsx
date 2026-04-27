@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getValidMove,
@@ -31,6 +32,8 @@ import {
 
 const defaultScore = { r: 12, b: 12 };
 const persistedSessionKey = "checkers-active-session";
+const activeGameRefetchMs = 1500;
+const sessionsPreviewRefetchMs = 1500;
 
 type SelectedCell = {
   x: number;
@@ -47,6 +50,22 @@ type PersistedSession = {
   gameId: string;
   playerColor: PlayerColor;
   playerName: string;
+};
+
+type SessionStatus = "waiting" | "active" | "finished";
+
+type SessionPreview = {
+  createdAt: string;
+  game: GameSession;
+  id: string;
+  result: {
+    loserColor: PlayerColor | null;
+    loserName: string | null;
+    winnerColor: PlayerColor | null;
+    winnerName: string | null;
+  };
+  status: SessionStatus;
+  updatedAt: string;
 };
 
 function canUseLocalStorage(): boolean {
@@ -124,6 +143,30 @@ function clearPersistedSession(): void {
   }
 }
 
+async function getSessionsPreviewFromServer(): Promise<SessionPreview[]> {
+  const response = await fetch("/api/sessions", {
+    cache: "no-store",
+  });
+  const payload = (await response.json().catch(() => null)) as {
+    error?: unknown;
+    sessions?: unknown;
+  } | null;
+
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error === "string"
+        ? payload.error
+        : "Could not load live sessions.",
+    );
+  }
+
+  if (!payload || !Array.isArray(payload.sessions)) {
+    throw new Error("Sessions API returned an invalid response.");
+  }
+
+  return payload.sessions as SessionPreview[];
+}
+
 function logCheckersClient(
   message: string,
   details?: Record<string, unknown>,
@@ -177,9 +220,9 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     null,
   );
   const [toasts, setToasts] = useState<GameToastItem[]>([]);
+  const queryClient = useQueryClient();
   const gameRef = useRef<GameSession | null>(null);
   const handledResultGameIdRef = useRef<string | null>(null);
-  const syncedGameIdRef = useRef<string | null>(null);
   const hasShownSyncUnavailableToastRef = useRef(false);
   const syncMissingCountRef = useRef(0);
   const toastIdRef = useRef(0);
@@ -270,7 +313,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const resetGameState = useCallback(() => {
     logCheckersClient("resetting game state");
     clearPersistedSession();
-    syncedGameIdRef.current = null;
     setSelected(null);
     setGame(null);
     setGameId("");
@@ -301,82 +343,80 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     }
   });
 
-  const syncGame = useEffectEvent(async (silent = true) => {
-    logCheckersClient("sync requested", { gameId, silent });
+  const isGameViewActive = view === "game" && Boolean(gameId);
 
-    if (!gameId) {
-      logCheckersClient("sync skipped because no game id is active");
-      return;
-    }
+  const activeGameQuery = useQuery({
+    enabled: isGameViewActive,
+    queryFn: () => getGameFromServer(gameApiUrl, gameId),
+    queryKey: ["game-session", gameApiUrl, gameId],
+    refetchInterval: isGameViewActive ? activeGameRefetchMs : false,
+    refetchIntervalInBackground: true,
+  });
 
-    try {
-      const nextGame = await getGameFromServer(gameApiUrl, gameId);
-      applySyncedGameState(nextGame);
-    } catch (error) {
-      logCheckersClient("sync failed", {
-        message: getGameApiErrorMessage(error),
-      });
-      if (
-        error instanceof GameApiError &&
-        (error.status === 404 || error.status === 403)
-      ) {
-        syncMissingCountRef.current += 1;
-
-        if (!hasShownSyncUnavailableToastRef.current) {
-          hasShownSyncUnavailableToastRef.current = true;
-          showToast(
-            {
-              kind: error.status === 404 ? "info" : "error",
-              title: error.status === 404 ? "Reconnecting" : "Sync blocked",
-              message:
-                error.status === 404
-                  ? "The server missed this game for a moment. Your board stays open while it retries."
-                  : getGameApiErrorMessage(error),
-            },
-            6500,
-          );
-        } else if (syncMissingCountRef.current === 6) {
-          showToast(
-            {
-              kind: "error",
-              title: "Still searching",
-              message:
-                "The board is still open, but the server cannot find this match yet.",
-            },
-            8000,
-          );
-        }
-
-        return;
-      }
-
-      if (!silent) {
-        showToast({
-          kind: "error",
-          title: "Request failed",
-          message: getGameApiErrorMessage(error),
-        });
-      }
-    }
+  const sessionsPreviewQuery = useQuery({
+    queryFn: getSessionsPreviewFromServer,
+    queryKey: ["sessions-preview"],
+    refetchInterval: sessionsPreviewRefetchMs,
+    refetchIntervalInBackground: true,
   });
 
   useEffect(() => {
-    logCheckersClient("sync effect evaluated", { gameId, view });
-
-    if (view !== "game" || !gameId) {
+    if (!activeGameQuery.data) {
       return;
     }
 
-    if (syncedGameIdRef.current === gameId) {
-      logCheckersClient("sync skipped because game id was already picked", {
-        gameId,
-      });
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    applySyncedGameState(activeGameQuery.data);
+  }, [activeGameQuery.data]);
+
+  useEffect(() => {
+    const error = activeGameQuery.error;
+
+    if (!error) {
       return;
     }
 
-    syncedGameIdRef.current = gameId;
-    void syncGame(true);
-  }, [gameId, view]);
+    logCheckersClient("sync failed", {
+      message: getGameApiErrorMessage(error),
+    });
+
+    if (error instanceof GameApiError && (error.status === 404 || error.status === 403)) {
+      syncMissingCountRef.current += 1;
+
+      if (!hasShownSyncUnavailableToastRef.current) {
+        hasShownSyncUnavailableToastRef.current = true;
+        showToast(
+          {
+            kind: error.status === 404 ? "info" : "error",
+            title: error.status === 404 ? "Reconnecting" : "Sync blocked",
+            message:
+              error.status === 404
+                ? "The server missed this game for a moment. Your board stays open while it retries."
+                : getGameApiErrorMessage(error),
+          },
+          6500,
+        );
+      } else if (syncMissingCountRef.current === 6) {
+        showToast(
+          {
+            kind: "error",
+            title: "Still searching",
+            message:
+              "The board is still open, but the server cannot find this match yet.",
+          },
+          8000,
+        );
+      }
+
+      return;
+    }
+
+    showToast({
+      kind: "error",
+      title: "Request failed",
+      message: getGameApiErrorMessage(error),
+    });
+  }, [activeGameQuery.error, showToast]);
 
   const board = game?.board ?? initialBoard;
   const turn = game?.turn ?? "r";
@@ -391,6 +431,10 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     : isPlayerTurn
         ? "YOUR TURN"
         : "OPPONENT'S TURN";
+  const sessionPreviews = sessionsPreviewQuery.data ?? [];
+  const sessionsUpdatedLabel = sessionsPreviewQuery.dataUpdatedAt
+    ? new Date(sessionsPreviewQuery.dataUpdatedAt).toLocaleTimeString()
+    : "--";
 
   const returnHomeAfterResult = useCallback(() => {
     logCheckersClient("returning home after result");
@@ -471,6 +515,8 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       setGameId(nextGame.id);
       setView("game");
       applyGameState(nextGame);
+      queryClient.setQueryData(["game-session", gameApiUrl, nextGame.id], nextGame);
+      void queryClient.invalidateQueries({ queryKey: ["sessions-preview"] });
       showToast({
         kind: "info",
         title: "Game created",
@@ -523,6 +569,8 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       setGameId(nextGame.id);
       setView("game");
       applyGameState(nextGame);
+      queryClient.setQueryData(["game-session", gameApiUrl, nextGame.id], nextGame);
+      void queryClient.invalidateQueries({ queryKey: ["sessions-preview"] });
       showToast({
         kind: "success",
         title: "Joined game",
@@ -596,6 +644,8 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       logCheckersClient("move submitted", { gameId: nextGame.id });
       setSelected(null);
       applyGameState(nextGame);
+      queryClient.setQueryData(["game-session", gameApiUrl, nextGame.id], nextGame);
+      void queryClient.invalidateQueries({ queryKey: ["sessions-preview"] });
     } catch (error) {
       logCheckersClient("move failed", {
         message: getGameApiErrorMessage(error),
@@ -1010,6 +1060,99 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="w-full px-3 pb-6 sm:px-6 sm:pb-8">
+        <div className="mx-auto w-full max-w-300 border-4 border-[#00d4ff] bg-[rgba(0,0,0,0.62)] p-3 sm:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-[11px] text-[#00d4ff] tracking-wider">
+              LIVE SESSION PREVIEW
+            </h2>
+            <p className="text-[9px] text-[#9ba8c9]">
+              {sessionsPreviewQuery.isFetching
+                ? "SYNCING..."
+                : `UPDATED ${sessionsUpdatedLabel}`}
+            </p>
+          </div>
+
+          {sessionsPreviewQuery.isError ? (
+            <p className="mt-4 text-[9px] text-[#ff6f6f]">
+              {getGameApiErrorMessage(sessionsPreviewQuery.error)}
+            </p>
+          ) : sessionsPreviewQuery.isLoading ? (
+            <p className="mt-4 text-[9px] text-[#9ba8c9]">Loading sessions...</p>
+          ) : sessionPreviews.length === 0 ? (
+            <p className="mt-4 text-[9px] text-[#9ba8c9]">
+              No sessions yet. Create a game to start live previews.
+            </p>
+          ) : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {sessionPreviews.map((session) => {
+                const isActiveSession = session.id === gameId;
+                const turnLabel = session.game.winner
+                  ? `${session.game.winner === "r" ? "RED" : "BLACK"} WON`
+                  : session.game.turn === "r"
+                    ? "RED TURN"
+                    : "BLACK TURN";
+                const statusClass =
+                  session.status === "finished"
+                    ? "text-[#00ff88]"
+                    : session.status === "active"
+                      ? "text-[#ffdd55]"
+                      : "text-[#72d4ff]";
+
+                return (
+                  <article
+                    key={session.id}
+                    className={`border-2 p-3 ${
+                      isActiveSession ? "border-[#00ff88]" : "border-[#44516f]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[9px] text-[#00d4ff]">ID {session.id}</p>
+                      <span className={`text-[9px] ${statusClass}`}>
+                        {session.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[9px] text-[#f5f5f5]">{turnLabel}</p>
+                    <p className="mt-1 text-[8px] text-[#b6b6b6]">
+                      R: {session.game.players.r ?? "Waiting"} | B: {session.game.players.b ?? "Waiting"}
+                    </p>
+
+                    <div className="mt-2 grid grid-cols-8 border border-[#5d6887]">
+                      {session.game.board.map((row, y) =>
+                        row.map((cell, x) => {
+                          const isDark = (x + y) % 2 === 1;
+                          const pieceColor =
+                            cell.toLowerCase() === "r" ? "text-[#ff4b4b]" : "text-[#f5f5f5]";
+
+                          return (
+                            <div
+                              key={`${session.id}-${x}-${y}`}
+                              className={`flex aspect-square items-center justify-center text-[8px] ${
+                                isDark ? "bg-[#221530]" : "bg-[#4c3766]"
+                              }`}
+                            >
+                              {cell !== "." ? (
+                                <span className={pieceColor}>
+                                  {cell === "R" || cell === "B" ? "K" : "o"}
+                                </span>
+                              ) : null}
+                            </div>
+                          );
+                        }),
+                      )}
+                    </div>
+
+                    <p className="mt-2 text-[8px] text-[#9ba8c9]">
+                      Updated {new Date(session.updatedAt).toLocaleTimeString()}
+                    </p>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </>
