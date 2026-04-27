@@ -32,8 +32,9 @@ import {
 
 const defaultScore = { r: 12, b: 12 };
 const persistedSessionKey = "checkers-active-session";
-const activeGameRefetchMs = 1500;
-const sessionsPreviewRefetchMs = 1500;
+const sessionsPreviewRefetchMs = 1000;
+const activeGameCacheMs = 10 * 60 * 1000;
+const sessionsPreviewCacheMs = 30 * 1000;
 
 type SelectedCell = {
   x: number;
@@ -114,7 +115,8 @@ function readPersistedSession(): PersistedSession | null {
       playerColor: parsedSession.playerColor,
       playerName: normalizedPlayerName,
     };
-  } catch {
+  } catch (error) {
+    console.error("[checkers-client] failed to read persisted session", error);
     return null;
   }
 }
@@ -126,8 +128,8 @@ function persistSession(session: PersistedSession): void {
 
   try {
     window.localStorage.setItem(persistedSessionKey, JSON.stringify(session));
-  } catch {
-    // Ignore storage write failures (private mode/quota).
+  } catch (error) {
+    console.error("[checkers-client] failed to persist session", error);
   }
 }
 
@@ -138,12 +140,13 @@ function clearPersistedSession(): void {
 
   try {
     window.localStorage.removeItem(persistedSessionKey);
-  } catch {
-    // Ignore storage clear failures.
+  } catch (error) {
+    console.error("[checkers-client] failed to clear persisted session", error);
   }
 }
 
 async function getSessionsPreviewFromServer(): Promise<SessionPreview[]> {
+  logCheckersClient("loading sessions preview");
   const response = await fetch("/api/sessions", {
     cache: "no-store",
   });
@@ -153,6 +156,9 @@ async function getSessionsPreviewFromServer(): Promise<SessionPreview[]> {
   } | null;
 
   if (!response.ok) {
+    logCheckersClient("sessions preview request failed", {
+      status: response.status,
+    });
     throw new Error(
       typeof payload?.error === "string"
         ? payload.error
@@ -163,6 +169,10 @@ async function getSessionsPreviewFromServer(): Promise<SessionPreview[]> {
   if (!payload || !Array.isArray(payload.sessions)) {
     throw new Error("Sessions API returned an invalid response.");
   }
+
+  logCheckersClient("sessions preview loaded", {
+    sessions: payload.sessions.length,
+  });
 
   return payload.sessions as SessionPreview[];
 }
@@ -298,11 +308,30 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
       winner: nextGame.winner,
     });
     const previousGame = gameRef.current;
+    const nextSerializedBoard = serializeBoard(nextGame.board);
+    const previousSerializedBoard = previousGame
+      ? serializeBoard(previousGame.board)
+      : null;
+
+    const isSameGameState =
+      !!previousGame &&
+      previousGame.id === nextGame.id &&
+      previousGame.turn === nextGame.turn &&
+      previousGame.winner === nextGame.winner &&
+      previousGame.players.r === nextGame.players.r &&
+      previousGame.players.b === nextGame.players.b &&
+      previousGame.score.r === nextGame.score.r &&
+      previousGame.score.b === nextGame.score.b &&
+      previousSerializedBoard === nextSerializedBoard;
+
+    if (isSameGameState) {
+      return;
+    }
 
     if (
       previousGame &&
       (previousGame.turn !== nextGame.turn ||
-        serializeBoard(previousGame.board) !== serializeBoard(nextGame.board))
+        previousSerializedBoard !== nextSerializedBoard)
     ) {
       setSelected(null);
     }
@@ -349,23 +378,49 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     enabled: isGameViewActive,
     queryFn: () => getGameFromServer(gameApiUrl, gameId),
     queryKey: ["game-session", gameApiUrl, gameId],
-    refetchInterval: isGameViewActive ? activeGameRefetchMs : false,
-    refetchIntervalInBackground: true,
+    gcTime: activeGameCacheMs,
+    refetchInterval: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    retry: 1,
+    staleTime: Infinity,
   });
 
   const sessionsPreviewQuery = useQuery({
+    gcTime: sessionsPreviewCacheMs,
     queryFn: getSessionsPreviewFromServer,
     queryKey: ["sessions-preview"],
     refetchInterval: sessionsPreviewRefetchMs,
     refetchIntervalInBackground: true,
+    retry: 1,
+    staleTime: 500,
   });
+
+  useEffect(() => {
+    if (!isGameViewActive || !sessionsPreviewQuery.data) {
+      return;
+    }
+
+    const activeSessionPreview = sessionsPreviewQuery.data.find(
+      (session) => session.id === gameId,
+    );
+
+    if (!activeSessionPreview) {
+      return;
+    }
+
+    queryClient.setQueryData(
+      ["game-session", gameApiUrl, gameId],
+      activeSessionPreview.game,
+    );
+  }, [gameApiUrl, gameId, isGameViewActive, queryClient, sessionsPreviewQuery.data]);
 
   useEffect(() => {
     if (!activeGameQuery.data) {
       return;
     }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     applySyncedGameState(activeGameQuery.data);
   }, [activeGameQuery.data]);
 

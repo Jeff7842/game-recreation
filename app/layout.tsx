@@ -24,11 +24,19 @@ export const metadata: Metadata = {
   description: "Title screen for the game",
 };
 
+function logRootLayout(message: string, details?: Record<string, unknown>): void {
+  console.log(`[root-layout] ${message}`, details ?? "");
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  logRootLayout("rendering root layout", {
+    hasChildren: Boolean(children),
+  });
+
   return (
     <html
       lang="en"
