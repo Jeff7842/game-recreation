@@ -1,9 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { GameSession, PlayerColor } from "@/lib/checkers";
 
-const SESSION_STORE_PATH = join(process.cwd(), "data", "sessions.json");
+const LOCAL_SESSION_STORE_PATH = join(process.cwd(), "data", "sessions.json");
+const SESSION_STORE_PATH = process.env.VERCEL
+  ? join(tmpdir(), "game-recreation", "sessions.json")
+  : LOCAL_SESSION_STORE_PATH;
 const SESSION_STORE_DIRECTORY = dirname(SESSION_STORE_PATH);
 
 type SessionStoreData = {
@@ -110,6 +114,22 @@ async function writeSessionStore(store: SessionStoreData): Promise<void> {
   await rename(temporaryPath, SESSION_STORE_PATH);
 }
 
+async function createInitialSessionStore(): Promise<SessionStoreData> {
+  if (!process.env.VERCEL) {
+    return createEmptySessionStore();
+  }
+
+  try {
+    return parseSessionStore(await readFile(LOCAL_SESSION_STORE_PATH, "utf8"));
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+
+    return createEmptySessionStore();
+  }
+}
+
 async function ensureSessionStoreExists(): Promise<void> {
   logSessionStore("ensuring local session store exists", {
     path: SESSION_STORE_PATH,
@@ -128,7 +148,7 @@ async function ensureSessionStoreExists(): Promise<void> {
     }
 
     logSessionStore("local session store missing, creating sessions.json");
-    await writeSessionStore(createEmptySessionStore());
+    await writeSessionStore(await createInitialSessionStore());
   }
 }
 
