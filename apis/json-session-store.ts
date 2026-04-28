@@ -1,22 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 
 import type { GameSession, PlayerColor } from "@/lib/checkers";
-import { log } from "node:console";
 
-const SESSION_STORE_SEED_PATH = join(process.cwd(), "data", "sessions.json");
-
-function getRuntimeSessionStorePath(): string {
-  if (process.env.VERCEL) {
-    return join(tmpdir(), "game-recreation", ".sessions.runtime.json");
-  }
-
-  return join(process.cwd(), "data", ".sessions.runtime.json");
-}
-
-const SESSION_STORE_RUNTIME_PATH = getRuntimeSessionStorePath();
-const SESSION_STORE_DIRECTORY = dirname(SESSION_STORE_RUNTIME_PATH);
+const SESSION_STORE_PATH = join(process.cwd(), "data", "sessions.json");
+const SESSION_STORE_DIRECTORY = dirname(SESSION_STORE_PATH);
 
 type SessionStoreData = {
   sessions: StoredSessionRecord[];
@@ -39,7 +27,6 @@ export type StoredSessionRecord = {
   status: SessionStatus;
   updatedAt: string;
 };
-
 
 let mutationQueue: Promise<unknown> = Promise.resolve();
 
@@ -109,67 +96,50 @@ function parseSessionStore(rawFileContents: string): SessionStoreData {
 }
 
 async function writeSessionStore(store: SessionStoreData): Promise<void> {
- 
-   logSessionStore("writing local session store", {
-    path: SESSION_STORE_RUNTIME_PATH,
+  logSessionStore("writing local session store", {
+    path: SESSION_STORE_PATH,
     sessions: store.sessions.length,
   });
 
   await mkdir(SESSION_STORE_DIRECTORY, { recursive: true });
 
   const serializedStore = `${JSON.stringify(store, null, 2)}\n`;
-  const temporaryPath = `${SESSION_STORE_RUNTIME_PATH}.tmp`;
+  const temporaryPath = `${SESSION_STORE_PATH}.tmp`;
 
   await writeFile(temporaryPath, serializedStore, "utf8");
-  await rename(temporaryPath, SESSION_STORE_RUNTIME_PATH);
-}
-
-async function readSeedSessionStore(): Promise<SessionStoreData> {
-  
-  logSessionStore("reading seed session store", { path: SESSION_STORE_SEED_PATH });
-
-  try {
-    const rawSeedContents = await readFile(SESSION_STORE_SEED_PATH, "utf8");
-    return parseSessionStore(rawSeedContents);
-  } catch (error) {
-    if (!isMissingFileError(error)) {
-      throw error;
-    }
-
-    return createEmptySessionStore();
-  }
+  await rename(temporaryPath, SESSION_STORE_PATH);
 }
 
 async function ensureSessionStoreExists(): Promise<void> {
   logSessionStore("ensuring local session store exists", {
-    path: SESSION_STORE_RUNTIME_PATH,
+    path: SESSION_STORE_PATH,
   });
 
   await mkdir(SESSION_STORE_DIRECTORY, { recursive: true });
 
   try {
-    await readFile(SESSION_STORE_RUNTIME_PATH, "utf8");
+    await readFile(SESSION_STORE_PATH, "utf8");
     logSessionStore("local session store found", {
-      path: SESSION_STORE_RUNTIME_PATH,
+      path: SESSION_STORE_PATH,
     });
   } catch (error) {
     if (!isMissingFileError(error)) {
       throw error;
     }
 
-    logSessionStore("local session store missing, bootstrapping from seed");
-    await writeSessionStore(await readSeedSessionStore());
+    logSessionStore("local session store missing, creating sessions.json");
+    await writeSessionStore(createEmptySessionStore());
   }
 }
 
 async function readSessionStore(): Promise<SessionStoreData> {
   logSessionStore("reading local session store", {
-    path: SESSION_STORE_RUNTIME_PATH,
+    path: SESSION_STORE_PATH,
   });
 
   await ensureSessionStoreExists();
 
-  const rawFileContents = await readFile(SESSION_STORE_RUNTIME_PATH, "utf8");
+  const rawFileContents = await readFile(SESSION_STORE_PATH, "utf8");
   return parseSessionStore(rawFileContents);
 }
 
@@ -199,7 +169,7 @@ function withSessionStoreMutation<T>(
 
 function deriveSessionStatus(game: GameSession): SessionStatus {
   logSessionStore("deriving session status from game state", { gameId: game.id });
-  
+
   if (game.winner) {
     return "finished";
   }
@@ -221,10 +191,7 @@ function deriveSessionResult(game: GameSession): SessionResult {
   };
 }
 
-
-
 export async function listStoredSessions(): Promise<StoredSessionRecord[]> {
-
   logSessionStore("listing stored sessions from local JSON");
 
   await waitForPendingMutations();
@@ -239,7 +206,6 @@ export async function listStoredSessions(): Promise<StoredSessionRecord[]> {
 export async function findStoredSessionById(
   gameId: string,
 ): Promise<StoredSessionRecord | null> {
-
   logSessionStore("finding stored session by ID", { gameId });
 
   await waitForPendingMutations();
@@ -252,7 +218,6 @@ export async function findStoredSessionById(
 }
 
 export async function hasStoredSessionId(gameId: string): Promise<boolean> {
-
   logSessionStore("checking if stored session exists", { gameId });
 
   await waitForPendingMutations();
@@ -268,7 +233,7 @@ export async function persistStoredSession(
 ): Promise<StoredSessionRecord> {
   logSessionStore("persisting stored session to local JSON", { gameId: game.id });
 
-  return withSessionStoreMutation((store) =>{
+  return withSessionStoreMutation((store) => {
     const normalizedGame = cloneGame(game);
     normalizedGame.id = normalizeGameId(normalizedGame.id);
 

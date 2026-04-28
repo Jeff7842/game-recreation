@@ -41,7 +41,7 @@ function cloneGame(game: GameSession): GameSession {
 
 const GAME_ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const GAME_ID_LENGTH = 8;
-const MAX_GAME_ID_ATTEMPTS = 20;
+const MAX_GAME_ID_ATTEMPTS = 100;
 
 function createRandomGameId(): string {
   let id = "CHK-";

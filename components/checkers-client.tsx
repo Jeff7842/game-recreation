@@ -31,7 +31,7 @@ import {
 } from "@/components/game-toast";
 
 const defaultScore = { r: 12, b: 12 };
-const persistedSessionKey = "checkers-active-session";
+const persistedSessionKey = "checkers-active-tab-session";
 const sessionsPreviewRefetchMs = 1000;
 const activeGameCacheMs = 10 * 60 * 1000;
 const sessionsPreviewCacheMs = 30 * 1000;
@@ -69,8 +69,12 @@ type SessionPreview = {
   updatedAt: string;
 };
 
-function canUseLocalStorage(): boolean {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+function getBoardCoordinate(playerColor: PlayerColor | null, displayIndex: number) {
+  return playerColor === "r" ? 7 - displayIndex : displayIndex;
+}
+
+function canUseSessionStorage(): boolean {
+  return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
 }
 
 function isPlayerColor(value: unknown): value is PlayerColor {
@@ -78,12 +82,12 @@ function isPlayerColor(value: unknown): value is PlayerColor {
 }
 
 function readPersistedSession(): PersistedSession | null {
-  if (!canUseLocalStorage()) {
+  if (!canUseSessionStorage()) {
     return null;
   }
 
   try {
-    const rawSession = window.localStorage.getItem(persistedSessionKey);
+    const rawSession = window.sessionStorage.getItem(persistedSessionKey);
 
     if (!rawSession) {
       return null;
@@ -116,32 +120,32 @@ function readPersistedSession(): PersistedSession | null {
       playerName: normalizedPlayerName,
     };
   } catch (error) {
-    console.error("[checkers-client] failed to read persisted session", error);
+    console.error("[checkers-client] failed to read persisted tab session", error);
     return null;
   }
 }
 
 function persistSession(session: PersistedSession): void {
-  if (!canUseLocalStorage()) {
+  if (!canUseSessionStorage()) {
     return;
   }
 
   try {
-    window.localStorage.setItem(persistedSessionKey, JSON.stringify(session));
+    window.sessionStorage.setItem(persistedSessionKey, JSON.stringify(session));
   } catch (error) {
-    console.error("[checkers-client] failed to persist session", error);
+    console.error("[checkers-client] failed to persist tab session", error);
   }
 }
 
 function clearPersistedSession(): void {
-  if (!canUseLocalStorage()) {
+  if (!canUseSessionStorage()) {
     return;
   }
 
   try {
-    window.localStorage.removeItem(persistedSessionKey);
+    window.sessionStorage.removeItem(persistedSessionKey);
   } catch (error) {
-    console.error("[checkers-client] failed to clear persisted session", error);
+    console.error("[checkers-client] failed to clear persisted tab session", error);
   }
 }
 
@@ -207,7 +211,7 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     const persistedSession = readPersistedSession();
 
     if (persistedSession) {
-      logCheckersClient("hydrating session from local storage", {
+      logCheckersClient("hydrating session from tab storage", {
         gameId: persistedSession.gameId,
       });
     }
@@ -486,11 +490,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
     : isPlayerTurn
         ? "YOUR TURN"
         : "OPPONENT'S TURN";
-  const sessionPreviews = sessionsPreviewQuery.data ?? [];
-  const sessionsUpdatedLabel = sessionsPreviewQuery.dataUpdatedAt
-    ? new Date(sessionsPreviewQuery.dataUpdatedAt).toLocaleTimeString()
-    : "--";
-
   const returnHomeAfterResult = useCallback(() => {
     logCheckersClient("returning home after result");
     handledResultGameIdRef.current = null;
@@ -1043,8 +1042,11 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
             <div className="order-1 md:order-2 w-full flex justify-center items-center p-2 sm:p-3 bg-[rgba(0,0,0,0.6)] border-4 border-[#00ff88] glow-pulse">
               <div className="grid grid-cols-8 w-full max-w-150 aspect-square border-4 border-gray-700">
-                {board.map((row, y) =>
-                  row.map((cell, x) => {
+                {Array.from({ length: 8 }, (_, displayY) =>
+                  Array.from({ length: 8 }, (_, displayX) => {
+                    const x = getBoardCoordinate(playerColor, displayX);
+                    const y = getBoardCoordinate(playerColor, displayY);
+                    const cell = board[y][x];
                     const isDark = (x + y) % 2 === 1;
                     const isSelected = selected?.x === x && selected?.y === y;
 
