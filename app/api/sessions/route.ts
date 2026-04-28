@@ -15,13 +15,6 @@ export async function GET(req: Request) {
     if (playerA && !playerB && !gameId) {
       const game = await createGame(playerA);
       console.log("[sessions-api] Created new session", { gameId: game.id });
-
-      if(!playerA || !gameId) {
-        return Response.json(
-          { error: "Player A and game ID are required to create a game." },
-          { status: 400 }
-        );
-      }
       return Response.json({ session: game });
     }
 
@@ -29,22 +22,6 @@ export async function GET(req: Request) {
       const game = await joinGame(gameId, playerB);
       console.log("[sessions-api] Player B joined", { gameId: game.id });
       return Response.json({ session: game });
-    }
-
-    if (playerA && playerB && gameId) {
-      const game = await joinGame(gameId, playerB) && await createGame(playerA);
-
-      if (!game) {
-        return Response.json(
-          { error: "Game not found" },
-          { status: 404 }
-        );
-      }
-
-      return Response.json({
-        message: "Game ready",
-        game,
-      });
     }
 
     const sessions = await listStoredSessions();
