@@ -31,7 +31,6 @@ import {
 } from "@/components/game-toast";
 
 const defaultScore = { r: 12, b: 12 };
-const persistedSessionKey = "checkers-active-tab-session";
 const sessionsPreviewRefetchMs = 1000;
 const activeGameCacheMs = 10 * 60 * 1000;
 const sessionsPreviewCacheMs = 30 * 1000;
@@ -45,12 +44,6 @@ type View = "create" | "join" | "game";
 
 type CheckersClientProps = {
   gameApiUrl: string;
-};
-
-type PersistedSession = {
-  gameId: string;
-  playerColor: PlayerColor;
-  playerName: string;
 };
 
 type SessionStatus = "waiting" | "active" | "finished";
@@ -71,82 +64,6 @@ type SessionPreview = {
 
 function getBoardCoordinate(playerColor: PlayerColor | null, displayIndex: number) {
   return playerColor === "r" ? 7 - displayIndex : displayIndex;
-}
-
-function canUseSessionStorage(): boolean {
-  return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
-}
-
-function isPlayerColor(value: unknown): value is PlayerColor {
-  return value === "r" || value === "b";
-}
-
-function readPersistedSession(): PersistedSession | null {
-  if (!canUseSessionStorage()) {
-    return null;
-  }
-
-  try {
-    const rawSession = window.sessionStorage.getItem(persistedSessionKey);
-
-    if (!rawSession) {
-      return null;
-    }
-
-    const parsedSession = JSON.parse(rawSession) as {
-      gameId?: unknown;
-      playerColor?: unknown;
-      playerName?: unknown;
-    };
-
-    if (
-      typeof parsedSession?.gameId !== "string" ||
-      typeof parsedSession?.playerName !== "string" ||
-      !isPlayerColor(parsedSession?.playerColor)
-    ) {
-      return null;
-    }
-
-    const normalizedGameId = parsedSession.gameId.trim().toUpperCase();
-    const normalizedPlayerName = parsedSession.playerName.trim();
-
-    if (!normalizedGameId || !normalizedPlayerName) {
-      return null;
-    }
-
-    return {
-      gameId: normalizedGameId,
-      playerColor: parsedSession.playerColor,
-      playerName: normalizedPlayerName,
-    };
-  } catch (error) {
-    console.error("[checkers-client] failed to read persisted tab session", error);
-    return null;
-  }
-}
-
-function persistSession(session: PersistedSession): void {
-  if (!canUseSessionStorage()) {
-    return;
-  }
-
-  try {
-    window.sessionStorage.setItem(persistedSessionKey, JSON.stringify(session));
-  } catch (error) {
-    console.error("[checkers-client] failed to persist tab session", error);
-  }
-}
-
-function clearPersistedSession(): void {
-  if (!canUseSessionStorage()) {
-    return;
-  }
-
-  try {
-    window.sessionStorage.removeItem(persistedSessionKey);
-  } catch (error) {
-    console.error("[checkers-client] failed to clear persisted tab session", error);
-  }
 }
 
 async function getSessionsPreviewFromServer(): Promise<SessionPreview[]> {
@@ -207,26 +124,13 @@ function Cell({ piece }: { piece: BoardCell }) {
 export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   logCheckersClient("rendered checkers client", { gameApiUrl });
 
-  const [initialSession] = useState<PersistedSession | null>(() => {
-    const persistedSession = readPersistedSession();
-
-    if (persistedSession) {
-      logCheckersClient("hydrating session from tab storage", {
-        gameId: persistedSession.gameId,
-      });
-    }
-
-    return persistedSession;
-  });
   const [selected, setSelected] = useState<SelectedCell | null>(null);
-  const [playerName, setPlayerName] = useState(initialSession?.playerName ?? "");
-  const [playerColor, setPlayerColor] = useState<PlayerColor | null>(
-    initialSession?.playerColor ?? null,
-  );
-  const [gameId, setGameId] = useState(initialSession?.gameId ?? "");
+  const [playerName, setPlayerName] = useState("");
+  const [playerColor, setPlayerColor] = useState<PlayerColor | null>(null);
+  const [gameId, setGameId] = useState("");
   const [game, setGame] = useState<GameSession | null>(null);
-  const [view, setView] = useState<View>(initialSession ? "game" : "create");
-  const [joinGameId, setJoinGameId] = useState(initialSession?.gameId ?? "");
+  const [view, setView] = useState<View>("create");
+  const [joinGameId, setJoinGameId] = useState("");
   const [copied, setCopied] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [isSubmittingMove, setIsSubmittingMove] = useState(false);
@@ -241,22 +145,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
   const syncMissingCountRef = useRef(0);
   const toastIdRef = useRef(0);
   const toastTimeoutsRef = useRef<number[]>([]);
-
-  useEffect(() => {
-    const normalizedGameId = gameId.trim().toUpperCase();
-    const normalizedPlayerName = playerName.trim();
-
-    if (view !== "game" || !normalizedGameId || !normalizedPlayerName || !playerColor) {
-      clearPersistedSession();
-      return;
-    }
-
-    persistSession({
-      gameId: normalizedGameId,
-      playerColor,
-      playerName: normalizedPlayerName,
-    });
-  }, [gameId, playerColor, playerName, view]);
 
   useEffect(() => {
     logCheckersClient("game ref updated", { gameId: game?.id });
@@ -345,7 +233,6 @@ export default function CheckersClient({ gameApiUrl }: CheckersClientProps) {
 
   const resetGameState = useCallback(() => {
     logCheckersClient("resetting game state");
-    clearPersistedSession();
     setSelected(null);
     setGame(null);
     setGameId("");

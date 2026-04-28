@@ -82,7 +82,7 @@ If `GAME_API_URL` points to another domain, that API must allow CORS for your si
 
 ## JSON Datastore
 
-The API repository bootstraps from `data/sessions.json` (tracked seed) and writes active runtime state to `data/.sessions.runtime.json`.
+The API reads and writes active game state directly in `data/sessions.json`.
 
 Each stored session includes:
 
@@ -93,14 +93,14 @@ Each stored session includes:
 - created/updated timestamps and session status (`waiting`, `active`, `finished`)
 
 No environment variables are required for this datastore mode.
+The browser does not keep an active game in tab storage; the JSON file is the source of truth for saved games.
 
 ## Why Persistence Can Fail
 
 This project's default "database" is a JSON file, not a managed database service.
 
-- Local development writes to `data/.sessions.runtime.json`.
-- On Vercel, runtime writes are redirected to `/tmp/game-recreation/.sessions.runtime.json`.
-- `/tmp` is ephemeral per runtime instance, so cold starts, scale-out, or redeploys can lose active sessions.
+- Local development writes to `data/sessions.json`.
+- Serverless platforms may block writes to project files or reset them across cold starts, scale-out, or redeploys.
 - Common symptom: a game id that existed earlier returns `404 Game not found`.
 
 For reliable production persistence, move writes to a durable database/store used by all instances.
